@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TenderMate</title>
+    <!-- Importeer de fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- GECORRIGEERDE LINKS HIERONDER -->
+    <!-- Marked.js voor Markdown Rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Highlight.js voor syntax highlighting in codeblokken -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+    <style>
+        :root {
+            --it-workz-orange: #F58A07;
+            --background-dark: #131314;
+            --chat-window-dark: #1E1F20;
+            --input-area-dark: #1E1F20;
+            --user-bubble: #3A3A3A;
+            --bot-bubble: #2E2F30;
+            --text-primary: #E3E3E3;
+            --text-secondary: #9B9B9B;
+            --border-color: #3A3A3A;
+            --send-button-bg: #3A3A3A;
+            --scrollbar-thumb: #4A4E57;
+            --table-header-bg: #3a3d44;
+        }
+
+        /* --- Algemene Layout --- */
+        body {
+            font-family: 'Inter', sans-serif;
+            font-size: 16px;
+            margin: 0;
+            background-color: var(--background-dark);
+            color: var(--text-primary);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #app-wrapper { width: 100%; height: 100%; display: flex; flex-direction: column; }
+        header { padding: 15px 25px; flex-shrink: 0; }
+        #app-title { font-size: 1.5rem; font-weight: 700; }
+        #app-title .tender-part { color: var(--text-primary); }
+        #app-title .mate-part { color: var(--it-workz-orange); }
+        
+        #chat-container {
+            flex-grow: 1; width: 100%; max-width: 800px; margin: 0 auto;
+            display: flex; flex-direction: column; overflow: hidden; position: relative;
+        }
+        #chat-window {
+            flex-grow: 1; overflow-y: scroll; padding: 0 10px;
+            display: flex; flex-direction: column;
+        }
+
+        /* Scrollbar Styling */
+        #chat-window::-webkit-scrollbar { width: 8px; }
+        #chat-window::-webkit-scrollbar-track { background: transparent; }
+        #chat-window::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
+        #chat-window { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+
+        /* Bericht Styling */
+        .user-message, .bot-message {
+            max-width: 100%;
+            padding: 12px 18px; margin-bottom: 12px; border-radius: 20px; line-height: 1.6;
+            display: flex; flex-direction: column;
+        }
+        .user-message { 
+            background-color: var(--user-bubble); color: var(--text-primary); 
+            align-self: flex-end; margin-left: auto; border-bottom-right-radius: 5px; 
+            max-width: 80%;
+        }
+        .bot-message { 
+            background-color: transparent;
+            color: var(--text-primary); 
+            align-self: flex-start; margin-right: auto; padding: 0;
+        }
+
+        /* Styling voor Bot Antwoord-elementen */
+        .bot-message h1, .bot-message h2, .bot-message h3, .bot-message h4 { margin: 1.2em 0 0.6em 0; padding-bottom: 0.3em; border-bottom: 1px solid var(--border-color); }
+        .bot-message ul, .bot-message ol { padding-left: 25px; margin: 0 0 1em 0; }
+        .bot-message li { margin-bottom: 8px; }
+        .bot-message p { margin: 0 0 1em 0; }
+        .bot-message p:last-child { margin-bottom: 0; }
+        .bot-message a { color: var(--it-workz-orange); text-decoration: none; }
+        .bot-message a:hover { text-decoration: underline; }
+        
+        .bot-message pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            margin: 1em 0;
+        }
+        
+        .bot-message code {
+            font-family: 'Inter', sans-serif !important;
+            font-size: 1em !important;
+            background-color: transparent !important;
+        }
+        
+        .bot-message pre > code {
+            display: block;
+            padding: 0 !important;
+        }
+        
+        /* Styling voor Tabellen */
+        .bot-message table { border-collapse: collapse; width: 100%; margin: 1em 0; border: 1px solid var(--border-color); }
+        .bot-message th, .bot-message td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border-color); }
+        .bot-message th { background-color: var(--table-header-bg); font-weight: 600; }
+        .bot-message tr:last-child td { border-bottom: none; }
+
+        /* Prompt Area Styling */
+        #prompt-container { width: 100%; max-width: 800px; margin: 0 auto; padding: 10px 20px 30px 20px; box-sizing: border-box; }
+        #chat-form { display: flex; align-items: flex-end; padding: 12px; border-radius: 28px; background-color: var(--input-area-dark); border: 1px solid var(--border-color); }
+        #upload-wrapper { position: relative; align-self: center; }
+        #upload-button { display: flex; justify-content: center; align-items: center; width: 44px; height: 44px; border: none; background-color: transparent; color: var(--text-secondary); cursor: pointer; border-radius: 50%; }
+        #upload-button svg { width: 28px; height: 28px; }
+        #upload-popover { display: none; position: absolute; bottom: 60px; left: 0; background-color: #2E2F30; border: 1px solid var(--border-color); border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); width: 250px; z-index: 10; overflow: hidden; }
+        .popover-item { display: flex; align-items: center; padding: 12px 16px; cursor: pointer; color: var(--text-primary); }
+        .popover-item:hover { background-color: #4A4E57; }
+        .popover-item svg { width: 20px; height: 20px; margin-right: 12px; }
+        #file-input { display: none; }
+        #message-input { flex-grow: 1; border: none; background-color: transparent; color: var(--text-primary); font-family: 'Inter', sans-serif; font-size: 16px; line-height: 1.5; resize: none; outline: none; padding: 10px; max-height: 200px; overflow-y: auto; }
+        #send-button { display: flex; justify-content: center; align-items: center; width: 36px; height: 36px; border: none; border-radius: 50%; background-color: var(--send-button-bg); color: var(--text-primary); cursor: pointer; align-self: flex-end; margin-left: 10px; transition: background-color 0.2s; }
+        #send-button.active { background-color: var(--it-workz-orange); }
+        #send-button svg { width: 20px; height: 20px; }
+    </style>
+</head>
+<body>
+    <div id="app-wrapper">
+        <header>
+            <div id="app-title">
+                <span class="tender-part">Tender</span><span class="mate-part">Mate</span>
+            </div>
+        </header>
+        <main id="chat-container">
+            <div id="chat-window"></div>
+        </main>
+        <div id="prompt-container">
+            <form id="chat-form">
+                <div id="upload-wrapper">
+                    <button type="button" id="upload-button">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+                    </button>
+                    <div id="upload-popover">
+                        <label for="file-input" class="popover-item">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.122 2.122l7.81-7.81" /></svg>
+                            <span>Bestand uploaden</span>
+                        </label>
+                    </div>
+                </div>
+                <textarea id="message-input" placeholder="Stel een vraag aan TenderMate..." rows="1"></textarea>
+                <button type="submit" id="send-button">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" /></svg>
+                </button>
+                <input type="file" id="file-input" name="document" accept=".pdf,.docx">
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const chatWindow = document.getElementById('chat-window');
+        const chatForm = document.getElementById('chat-form');
+        const messageInput = document.getElementById('message-input');
+        const sendButton = document.getElementById('send-button');
+        const fileInput = document.getElementById('file-input');
+        const uploadButton = document.getElementById('upload-button');
+        const uploadPopover = document.getElementById('upload-popover');
+        
+        const BACKEND_API_URL = 'http://localhost:7071/api/TalkToTenderBot'; 
+        let conversation = [];
+        let selectedFile = null;
+
+        uploadButton.addEventListener('click', (e) => {
+            e.stopPropagation();
+            uploadPopover.style.display = uploadPopover.style.display === 'block' ? 'none' : 'block';
+        });
+        window.addEventListener('click', () => {
+            if (uploadPopover.style.display === 'block') {
+                uploadPopover.style.display = 'none';
+            }
+        });
+        
+        fileInput.addEventListener('change', () => {
+            selectedFile = fileInput.files[0];
+            if (selectedFile) {
+                uploadPopover.style.display = 'none';
+                addMessage(`Bestand geselecteerd voor volgende bericht: ${selectedFile.name}`, 'bot-message typing-indicator file-selected-indicator');
+            }
+        });
+        
+        messageInput.addEventListener('input', () => {
+            messageInput.style.height = 'auto';
+            messageInput.style.height = (messageInput.scrollHeight) + 'px';
+            sendButton.classList.toggle('active', messageInput.value.trim() !== '');
+        });
+
+        messageInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                chatForm.requestSubmit();
+            }
+        });
+
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const userMessage = messageInput.value.trim();
+            if (!userMessage && !selectedFile) return;
+
+            const fileIndicator = chatWindow.querySelector('.file-selected-indicator');
+            if (fileIndicator) fileIndicator.remove();
+            
+            if (userMessage) {
+                addMessage(userMessage, 'user-message');
+            }
+
+            messageInput.value = '';
+            messageInput.style.height = 'auto';
+            sendButton.classList.remove('active');
+            
+            const typingIndicator = addMessage('TenderMate is aan het typen...', 'bot-message typing-indicator');
+
+            try {
+                const formData = new FormData();
+                formData.append('question', userMessage || `Analyseer het bijgevoegde document.`);
+                formData.append('conversation', JSON.stringify(conversation));
+                if (selectedFile) {
+                    formData.append('document', selectedFile);
+                    selectedFile = null;
+                }
+
+                const response = await fetch(BACKEND_API_URL, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                document.querySelectorAll('.typing-indicator').forEach(el => el.remove());
+                if (!response.ok) throw new Error(`Serverfout: ${await response.text()}`);
+                const data = await response.json();
+                
+                addMessage(data.chat_output, 'bot-message');
+
+                conversation.push({ role: 'user', content: userMessage });
+                conversation.push({ role: 'bot', content: data.chat_output });
+
+            } catch (error) {
+                console.error('Fout:', error);
+                document.querySelectorAll('.typing-indicator').forEach(el => el.remove());
+                addMessage(`Oeps, er is een fout opgetreden: ${error.message}`, 'bot-message');
+            }
+        });
+
+        function addMessage(message, className) {
+            const messageElement = document.createElement('div');
+            if (className.includes('typing-indicator') && message.startsWith('Bestand geselecteerd')) {
+                const oldFileIndicator = chatWindow.querySelector('.file-selected-indicator');
+                if(oldFileIndicator) oldFileIndicator.remove();
+                messageElement.classList.add('file-selected-indicator');
+            }
+            
+            messageElement.className = className;
+            if (className.includes('bot-message')) {
+                let cleanMessage = message.trim();
+                const codeBlockRegex = /^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/;
+                const match = cleanMessage.match(codeBlockRegex);
+                if (match) {
+                    cleanMessage = match[1];
+                }
+
+                messageElement.innerHTML = marked.parse(cleanMessage, { breaks: true });
+
+                messageElement.querySelectorAll('pre code').forEach((block) => {
+                    hljs.highlightElement(block);
+                });
+            } else {
+                messageElement.textContent = message;
+            }
+            chatWindow.appendChild(messageElement);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+            return messageElement;
+        }
+    </script>
+</body>
+</html>
