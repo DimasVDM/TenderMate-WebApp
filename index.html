@@ -4,13 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TenderMate</title>
-    <!-- Importeer de fonts -->
+    <!-- Importeer de fonts en de 'marked' bibliotheek voor Markdown -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    
-    <!-- GECORRIGEERDE LINKS HIERONDER -->
-    <!-- Marked.js voor Markdown Rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <!-- Highlight.js voor syntax highlighting in codeblokken -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
@@ -21,7 +18,7 @@
             --it-workz-orange: #F58A07;
             --background-dark: #131314;
             --chat-window-dark: #1E1F20;
-            --input-area-dark: #1E1F20;
+            --input-area-dark: #2E2F30; /* Iets andere tint voor de input balk */
             --user-bubble: #3A3A3A;
             --bot-bubble: #2E2F30;
             --text-primary: #E3E3E3;
@@ -35,15 +32,9 @@
         /* --- Algemene Layout --- */
         body {
             font-family: 'Inter', sans-serif;
-            font-size: 16px;
-            margin: 0;
-            background-color: var(--background-dark);
-            color: var(--text-primary);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            overflow: hidden;
+            font-size: 16px; margin: 0; background-color: var(--background-dark);
+            color: var(--text-primary); display: flex; justify-content: center;
+            align-items: center; height: 100vh; overflow: hidden;
         }
 
         #app-wrapper { width: 100%; height: 100%; display: flex; flex-direction: column; }
@@ -69,9 +60,8 @@
 
         /* Bericht Styling */
         .user-message, .bot-message {
-            max-width: 100%;
-            padding: 12px 18px; margin-bottom: 12px; border-radius: 20px; line-height: 1.6;
-            display: flex; flex-direction: column;
+            max-width: 100%; padding: 12px 18px; margin-bottom: 12px; border-radius: 20px;
+            line-height: 1.6; display: flex; flex-direction: column;
         }
         .user-message { 
             background-color: var(--user-bubble); color: var(--text-primary); 
@@ -79,46 +69,76 @@
             max-width: 80%;
         }
         .bot-message { 
-            background-color: transparent;
-            color: var(--text-primary); 
+            background-color: transparent; color: var(--text-primary); 
             align-self: flex-start; margin-right: auto; padding: 0;
         }
 
-        /* Styling voor Bot Antwoord-elementen */
-        .bot-message h1, .bot-message h2, .bot-message h3, .bot-message h4 { margin: 1.2em 0 0.6em 0; padding-bottom: 0.3em; border-bottom: 1px solid var(--border-color); }
+        .bot-message h1, .bot-message h2 { margin: 1.2em 0 0.6em 0; padding-bottom: 0.3em; border-bottom: 1px solid var(--border-color); }
         .bot-message ul, .bot-message ol { padding-left: 25px; margin: 0 0 1em 0; }
         .bot-message li { margin-bottom: 8px; }
         .bot-message p { margin: 0 0 1em 0; }
         .bot-message p:last-child { margin-bottom: 0; }
-        .bot-message a { color: var(--it-workz-orange); text-decoration: none; }
-        .bot-message a:hover { text-decoration: underline; }
-        
-        .bot-message pre {
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            margin: 1em 0;
-        }
-        
-        .bot-message code {
-            font-family: 'Inter', sans-serif !important;
-            font-size: 1em !important;
-            background-color: transparent !important;
-        }
-        
-        .bot-message pre > code {
-            display: block;
-            padding: 0 !important;
-        }
-        
-        /* Styling voor Tabellen */
+        .bot-message pre { white-space: pre-wrap; word-wrap: break-word; margin: 1em 0; }
+        .bot-message code { font-family: 'Inter', sans-serif !important; font-size: 1em !important; background-color: transparent !important; }
+        .bot-message pre > code { display: block; padding: 1em !important; border-radius: 8px; background-color: #131314 !important; }
+
+        /* Tabel Styling */
         .bot-message table { border-collapse: collapse; width: 100%; margin: 1em 0; border: 1px solid var(--border-color); }
         .bot-message th, .bot-message td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border-color); }
         .bot-message th { background-color: var(--table-header-bg); font-weight: 600; }
         .bot-message tr:last-child td { border-bottom: none; }
 
-        /* Prompt Area Styling */
+        /* --- AANGEPAST: Prompt Area Styling --- */
         #prompt-container { width: 100%; max-width: 800px; margin: 0 auto; padding: 10px 20px 30px 20px; box-sizing: border-box; }
-        #chat-form { display: flex; align-items: flex-end; padding: 12px; border-radius: 28px; background-color: var(--input-area-dark); border: 1px solid var(--border-color); }
+        #chat-form {
+            display: flex;
+            flex-direction: column; /* Stapelt de file-pill en de input-rij */
+            padding: 12px;
+            border-radius: 24px;
+            background-color: var(--input-area-dark);
+            border: 1px solid var(--border-color);
+        }
+        #input-row {
+            display: flex;
+            align-items: flex-end;
+            width: 100%;
+        }
+
+        /* --- NIEUW: Styling voor de File Pill --- */
+        #file-attachment-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 10px; /* Ruimte tussen pill en tekst-input */
+        }
+        .file-pill {
+            display: flex;
+            align-items: center;
+            background-color: var(--bot-bubble);
+            padding: 6px 12px;
+            border-radius: 16px;
+            font-size: 14px;
+        }
+        .file-pill svg { width: 18px; height: 18px; margin-right: 8px; color: var(--text-secondary); }
+        .file-pill-name {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 200px;
+        }
+        .file-pill-remove {
+            margin-left: 10px;
+            cursor: pointer;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+        }
+        .file-pill-remove:hover { background-color: #4A4E57; }
+
+        /* Popover & Upload Knop */
         #upload-wrapper { position: relative; align-self: center; }
         #upload-button { display: flex; justify-content: center; align-items: center; width: 44px; height: 44px; border: none; background-color: transparent; color: var(--text-secondary); cursor: pointer; border-radius: 50%; }
         #upload-button svg { width: 28px; height: 28px; }
@@ -145,27 +165,32 @@
         </main>
         <div id="prompt-container">
             <form id="chat-form">
-                <div id="upload-wrapper">
-                    <button type="button" id="upload-button">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
-                    </button>
-                    <div id="upload-popover">
-                        <label for="file-input" class="popover-item">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.122 2.122l7.81-7.81" /></svg>
-                            <span>Bestand uploaden</span>
-                        </label>
+                <!-- NIEUW: Container voor de file pill -->
+                <div id="file-attachment-container"></div>
+                <div id="input-row">
+                    <div id="upload-wrapper">
+                        <button type="button" id="upload-button">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+                        </button>
+                        <div id="upload-popover">
+                            <label for="file-input" class="popover-item">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.122 2.122l7.81-7.81" /></svg>
+                                <span>Bestand uploaden</span>
+                            </label>
+                        </div>
                     </div>
+                    <textarea id="message-input" placeholder="Stel een vraag aan TenderMate..." rows="1"></textarea>
+                    <button type="submit" id="send-button">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" /></svg>
+                    </button>
                 </div>
-                <textarea id="message-input" placeholder="Stel een vraag aan TenderMate..." rows="1"></textarea>
-                <button type="submit" id="send-button">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" /></svg>
-                </button>
                 <input type="file" id="file-input" name="document" accept=".pdf,.docx">
             </form>
         </div>
     </div>
 
     <script>
+        // De JavaScript logica wordt hieronder aangepast
         const chatWindow = document.getElementById('chat-window');
         const chatForm = document.getElementById('chat-form');
         const messageInput = document.getElementById('message-input');
@@ -173,11 +198,13 @@
         const fileInput = document.getElementById('file-input');
         const uploadButton = document.getElementById('upload-button');
         const uploadPopover = document.getElementById('upload-popover');
+        const fileAttachmentContainer = document.getElementById('file-attachment-container');
         
         const BACKEND_API_URL = '/api/TalkToTenderBot'; 
         let conversation = [];
         let selectedFile = null;
 
+        // --- Popover Logica ---
         uploadButton.addEventListener('click', (e) => {
             e.stopPropagation();
             uploadPopover.style.display = uploadPopover.style.display === 'block' ? 'none' : 'block';
@@ -188,14 +215,35 @@
             }
         });
         
+        // --- NIEUW: File Pill Logica ---
         fileInput.addEventListener('change', () => {
-            selectedFile = fileInput.files[0];
-            if (selectedFile) {
+            if (fileInput.files.length > 0) {
+                selectedFile = fileInput.files[0];
                 uploadPopover.style.display = 'none';
-                addMessage(`Bestand geselecteerd voor volgende bericht: ${selectedFile.name}`, 'bot-message typing-indicator file-selected-indicator');
+                createFilePill(selectedFile.name);
             }
         });
         
+        function createFilePill(fileName) {
+            fileAttachmentContainer.innerHTML = ''; // Zorg dat er maar één pill tegelijk is
+            const pill = document.createElement('div');
+            pill.className = 'file-pill';
+            pill.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" /></svg>
+                <span class="file-pill-name">${fileName}</span>
+                <span class="file-pill-remove">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                </span>
+            `;
+            fileAttachmentContainer.appendChild(pill);
+            pill.querySelector('.file-pill-remove').addEventListener('click', () => {
+                pill.remove();
+                selectedFile = null;
+                fileInput.value = ''; // Reset de file input
+            });
+        }
+        
+        // --- Dynamische Textarea & Send Knop ---
         messageInput.addEventListener('input', () => {
             messageInput.style.height = 'auto';
             messageInput.style.height = (messageInput.scrollHeight) + 'px';
@@ -209,21 +257,21 @@
             }
         });
 
+        // --- Chat Logica ---
         chatForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const userMessage = messageInput.value.trim();
             if (!userMessage && !selectedFile) return;
-
-            const fileIndicator = chatWindow.querySelector('.file-selected-indicator');
-            if (fileIndicator) fileIndicator.remove();
             
             if (userMessage) {
                 addMessage(userMessage, 'user-message');
             }
 
+            // Reset de inputs
             messageInput.value = '';
             messageInput.style.height = 'auto';
             sendButton.classList.remove('active');
+            fileAttachmentContainer.innerHTML = ''; // Verwijder de pill na versturen
             
             const typingIndicator = addMessage('TenderMate is aan het typen...', 'bot-message typing-indicator');
 
@@ -233,7 +281,7 @@
                 formData.append('conversation', JSON.stringify(conversation));
                 if (selectedFile) {
                     formData.append('document', selectedFile);
-                    selectedFile = null;
+                    selectedFile = null; // Reset het geselecteerde bestand na versturen
                 }
 
                 const response = await fetch(BACKEND_API_URL, {
@@ -259,12 +307,6 @@
 
         function addMessage(message, className) {
             const messageElement = document.createElement('div');
-            if (className.includes('typing-indicator') && message.startsWith('Bestand geselecteerd')) {
-                const oldFileIndicator = chatWindow.querySelector('.file-selected-indicator');
-                if(oldFileIndicator) oldFileIndicator.remove();
-                messageElement.classList.add('file-selected-indicator');
-            }
-            
             messageElement.className = className;
             if (className.includes('bot-message')) {
                 let cleanMessage = message.trim();
@@ -273,10 +315,8 @@
                 if (match) {
                     cleanMessage = match[1];
                 }
-
                 messageElement.innerHTML = marked.parse(cleanMessage, { breaks: true });
-
-                messageElement.querySelectorAll('pre code').forEach((block) => {
+                messageElement.querySelectorAll('pre > code').forEach((block) => {
                     hljs.highlightElement(block);
                 });
             } else {
