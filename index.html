@@ -39,10 +39,47 @@
             overflow: hidden;
         }
         #app-wrapper { width: 100%; height: 100%; display: flex; flex-direction: column; }
-        header { padding: 15px 25px; flex-shrink: 0; }
+
+        /* Header + sign out */
+        header.topbar{
+            padding: 15px 25px;
+            flex-shrink: 0;
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+        }
         #app-title { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.5px;}
         #app-title .tender-part { color: var(--text-primary); }
         #app-title .mate-part { color: var(--it-workz-orange); }
+
+        .user-actions { display:flex; align-items:center; gap:10px; }
+        .user-chip {
+            display:flex; align-items:center; gap:8px;
+            padding:4px 10px; border-radius:999px;
+            border:1px solid var(--border-color);
+            background: rgba(0,0,0,0.15);
+            color: var(--text-secondary);
+            font-size: 12px;
+            line-height: 1;
+        }
+        .user-chip .avatar {
+            width:20px; height:20px; border-radius:50%;
+            display:inline-flex; align-items:center; justify-content:center;
+            background: var(--input-area-dark); color:#fff; font-weight:600; font-size:11px;
+        }
+        .signout-btn{
+            display:inline-flex; align-items:center; gap:8px;
+            padding:8px 12px; border-radius:12px;
+            border:1px solid var(--border-color);
+            background: #2a2b2d;
+            color: var(--text-primary);
+            cursor:pointer;
+            transition: background .15s, transform .12s;
+        }
+        .signout-btn:hover{ background:#2f3032; }
+        .signout-btn:active{ transform: scale(0.98); }
+        .signout-btn svg{ width:18px; height:18px; display:block; }
+
         #chat-container {
             flex-grow: 1;
             width: 100%;
@@ -65,6 +102,7 @@
         #chat-window::-webkit-scrollbar-track { background: transparent; }
         #chat-window::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
         #chat-window { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+
         .user-message {
             background: linear-gradient(96deg, #35373B 70%, #232426 100%);
             color: var(--text-primary);
@@ -79,7 +117,7 @@
             word-break: break-word;
             line-height: 1.6;
             margin-bottom: 14px;
-            padding: 14px 18px 14px 18px;  /* <-- Belangrijk! */
+            padding: 14px 18px 14px 18px;
             font-size: 1rem;
             white-space: pre-line;
         }
@@ -106,10 +144,7 @@
             from { opacity: 0; transform: translateX(-20px);}
             to   { opacity: 1; transform: translateX(0);}
         }
-        .bot-message > * {
-            margin-left: 2px;
-            margin-right: 2px;
-        }
+        .bot-message > * { margin-left: 2px; margin-right: 2px; }
         .bot-message pre > code, .bot-message table {
             background-color: #18191A !important;
             border-radius: 8px;
@@ -123,6 +158,7 @@
             padding-bottom: 0.22em;
             border-bottom: 1px solid var(--border-color);
         }
+
         #prompt-container {
             width: 100%;
             max-width: 800px;
@@ -142,9 +178,7 @@
             transition: border 0.18s;
             min-height: 62px;
         }
-        #chat-form:focus-within {
-            border: 1.5px solid var(--it-workz-orange);
-        }
+        #chat-form:focus-within { border: 1.5px solid var(--it-workz-orange); }
         #input-row {
             display: flex;
             align-items: flex-start;
@@ -172,9 +206,7 @@
             color: var(--it-workz-orange);
             transform: scale(1.12) rotate(-8deg);
         }
-        #upload-button:active {
-            transform: scale(0.92) rotate(5deg);
-        }
+        #upload-button:active { transform: scale(0.92) rotate(5deg); }
         #upload-button svg {
             width: 20px !important;
             height: 20px !important;
@@ -217,10 +249,7 @@
             border-radius: 14px;
             margin: 0;
         }
-        #message-input::placeholder {
-            color: var(--text-secondary);
-            opacity: 0.87;
-        }
+        #message-input::placeholder { color: var(--text-secondary); opacity: 0.87; }
         #send-button {
             display: flex;
             justify-content: center;
@@ -235,43 +264,23 @@
             margin-left: 6px;
             margin-top: 3px;
             transition: background 0.18s, color 0.18s, transform 0.15s;
-            box-shadow: none;
         }
-        #send-button.active, #send-button:focus, #send-button:hover {
-            background: var(--it-workz-orange);
-            color: #fff;
-            transform: scale(1.11);
-        }
-        #send-button:active {
-            transform: scale(0.95);
-        }
-        #send-button svg {
-            width: 19px;
-            height: 19px;
-            display: block;
-        }
-        #file-attachment-container {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-bottom: 3px;
-        }
+        #send-button.active, #send-button:focus, #send-button:hover { background: var(--it-workz-orange); color: #fff; transform: scale(1.11); }
+        #send-button:active { transform: scale(0.95); }
+        #send-button svg { width: 19px; height: 19px; display: block; }
+
+        #file-attachment-container { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 3px; }
         .file-pill {
-            display: flex;
-            align-items: center;
+            display: flex; align-items: center; gap:4px;
             background: #212223;
             padding: 5px 10px;
             border-radius: 14px;
-            font-size: 13px;
-            color: var(--text-primary);
+            font-size: 13px; color: var(--text-primary);
             box-shadow: 0 1px 6px rgba(50,50,60,0.04);
             border: 1px solid #2c2c2d;
-            gap: 4px;
         }
         .file-pill svg { width: 15px; height: 15px; margin-right: 7px; color: var(--text-secondary);}
-        .file-pill-name {
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px;
-        }
+        .file-pill-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
         .file-pill-remove {
             margin-left: 7px; cursor: pointer; width: 19px; height: 19px;
             display: flex; align-items: center; justify-content: center; border-radius: 50%;
@@ -282,14 +291,26 @@
 </head>
 <body>
     <div id="app-wrapper">
-        <header>
+        <header class="topbar">
             <div id="app-title">
                 <span class="tender-part">Tender</span><span class="mate-part">Mate</span>
             </div>
+            <div class="user-actions">
+                <div class="user-chip" id="user-chip" title="Ingelogd">
+                    <span class="avatar" id="user-initials">TM</span>
+                    <span id="user-shortname">Gebruiker</span>
+                </div>
+                <button id="signout" class="signout-btn" type="button">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M10 17v-2h5V9h-5V7h7v10h-7zM8 7H5v10h3v2H3V5h5v2z"/></svg>
+                    <span>Sign out</span>
+                </button>
+            </div>
         </header>
+
         <main id="chat-container">
             <div id="chat-window"></div>
         </main>
+
         <div id="prompt-container">
             <form id="chat-form">
                 <div id="file-attachment-container"></div>
@@ -319,6 +340,7 @@
             </form>
         </div>
     </div>
+
     <script>
         const chatWindow = document.getElementById('chat-window');
         const chatForm = document.getElementById('chat-form');
@@ -332,13 +354,44 @@
         let conversation = [];
         let selectedFile = null;
 
-         // Functie om de welkomstboodschap te tonen
+        // ----- SIGN OUT + USER CHIP -----
+        const signoutBtn = document.getElementById('signout');
+        const userInitialsEl = document.getElementById('user-initials');
+        const userShortnameEl = document.getElementById('user-shortname');
+
+        async function loadUser() {
+            try {
+                const res = await fetch('/.auth/me', { credentials: 'include' });
+                if (!res.ok) throw new Error('auth fetch failed');
+                const data = await res.json();
+                const p = data?.clientPrincipal;
+                const name = p?.userDetails || '';
+                const email = p?.userId || '';
+                // Initialen
+                const initials = (name || email || 'TM')
+                    .split(/[ .@_-]/).filter(Boolean).slice(0,2).map(s=>s[0].toUpperCase()).join('') || 'TM';
+                userInitialsEl.textContent = initials;
+                userShortnameEl.textContent = name || email || 'Gebruiker';
+            } catch {
+                userInitialsEl.textContent = 'TM';
+                userShortnameEl.textContent = 'Gebruiker';
+            }
+        }
+        loadUser();
+
+        signoutBtn.addEventListener('click', () => {
+            // SWA logout en terug naar home
+            window.location.href = '/.auth/logout?post_logout_redirect_uri=/';
+        });
+        // ---------------------------------
+
+        // Welkomstboodschap
         function showWelcomeMessage() {
             const welcomeText = `## Hallo! Ik ben TenderMate.
-            \nIk ben jouw AI-assistent, gespecialiseerd in het analyseren en verwerken van aanbestedingsdocumenten.
-            \n\nHoe kan ik je vandaag helpen? Je kunt bijvoorbeeld:
-            \n- Een document uploaden en vragen om een samenvatting.
-            \n- Mij vragen een concepttekst op te stellen voor een kwaliteitsvraag.`;
+\nIk ben jouw AI-assistent, gespecialiseerd in het analyseren en verwerken van aanbestedingsdocumenten.
+\n\nHoe kan ik je vandaag helpen? Je kunt bijvoorbeeld:
+\n- Een document uploaden en vragen om een samenvatting.
+\n- Mij vragen een concepttekst op te stellen voor een kwaliteitsvraag.`;
             addMessage(welcomeText, 'bot-message');
         }
 
@@ -398,14 +451,15 @@
             e.preventDefault();
             const userMessage = messageInput.value.trim();
             if (!userMessage && !selectedFile) return;
-            if (userMessage) {
-                addMessage(userMessage, 'user-message');
-            }
+            if (userMessage) addMessage(userMessage, 'user-message');
+
             messageInput.value = '';
             messageInput.style.height = 'auto';
             sendButton.classList.remove('active');
             fileAttachmentContainer.innerHTML = '';
+
             const typingIndicator = addMessage('TenderMate is aan het typen...', 'bot-message typing-indicator');
+
             try {
                 const formData = new FormData();
                 formData.append('question', userMessage || `Analyseer het bijgevoegde document.`);
@@ -414,22 +468,23 @@
                     formData.append('document', selectedFile);
                     selectedFile = null;
                 }
-                const response = await fetch(BACKEND_API_URL, {
-                    method: 'POST',
-                    body: formData
-                });
+
+                const response = await fetch(BACKEND_API_URL, { method: 'POST', body: formData });
                 document.querySelectorAll('.typing-indicator').forEach(el => el.remove());
                 if (!response.ok) throw new Error(`Serverfout: ${await response.text()}`);
                 const data = await response.json();
+
                 addMessage(data.chat_output, 'bot-message');
                 conversation.push({ role: 'user', content: userMessage });
                 conversation.push({ role: 'bot', content: data.chat_output });
+
             } catch (error) {
                 console.error('Fout:', error);
                 document.querySelectorAll('.typing-indicator').forEach(el => el.remove());
                 addMessage(`Oeps, er is een fout opgetreden: ${error.message}`, 'bot-message');
             }
         });
+
         function addMessage(message, className) {
             const messageElement = document.createElement('div');
             messageElement.className = className;
@@ -437,13 +492,9 @@
                 let cleanMessage = message.trim();
                 const codeBlockRegex = /^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/;
                 const match = cleanMessage.match(codeBlockRegex);
-                if (match) {
-                    cleanMessage = match[1];
-                }
+                if (match) cleanMessage = match[1];
                 messageElement.innerHTML = marked.parse(cleanMessage, { breaks: true });
-                messageElement.querySelectorAll('pre > code').forEach((block) => {
-                    hljs.highlightElement(block);
-                });
+                messageElement.querySelectorAll('pre > code').forEach((block) => hljs.highlightElement(block));
             } else {
                 messageElement.textContent = message;
             }
@@ -452,10 +503,7 @@
             return messageElement;
         }
 
-        // --- HIER WORDT DE FUNCTIE AANGEROEPEN ---
-        // Roep de welkomstboodschap aan wanneer de pagina laadt
         document.addEventListener('DOMContentLoaded', showWelcomeMessage);
-        // -----------------------------------------
     </script>
 </body>
 </html>
