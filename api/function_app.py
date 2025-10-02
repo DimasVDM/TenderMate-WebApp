@@ -38,7 +38,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     if not prompt_flow_url or not prompt_flow_api_key:
         return func.HttpResponse("Server configuration error (missing PF URL/key).", status_code=500)
 
-    # ---- Invoer robuust parsen (multipart én JSON) ----
+    # ---- Invoer parsen (multipart én JSON) ----
     question = None
     conversation = []
     document_text = ""
@@ -68,8 +68,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                     reader = PdfReader(file_stream)
                     parts = []
                     for p in reader.pages:
-                        txt = p.extract_text() or ""
-                        parts.append(txt)
+                        parts.append((p.extract_text() or ""))
                     document_text = "\n".join(parts)
                 elif mt == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
                     doc = docx.Document(file_stream)
@@ -85,12 +84,20 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
         logging.exception(f"Invoer parse error: {e}")
         return func.HttpResponse("Ongeldig verzoek (parse error).", status_code=400)
 
-    # ---- History naar Prompt Flow-formaat ----
-    prompt_flow_history = format_history_for_prompt_flow(conversation)
+    # ---- History voor Prompt Flow ----
+    def format_history_for_prompt_flow(conversation):
+        chat_history = []
+        for i in range(0, len(conversation), 2):
+            if i + 1 < len(conversation) and conversation[i].get('role') == 'user' and conversation[i+1].get('role') == 'bot':
+                chat_history.append({
+                    "inputs": {"chat_input": conversation[i]['content']},
+                    "outputs": {"chat_output": conversation[i+1]['content']}
+                })
+        return chat_history
 
     payload = {
         "chat_input": question or "Analyseer het bijgevoegde document.",
-        "chat_history": prompt_flow_history,
+        "chat_history": format_history_for_prompt_flow(conversation),
         "document_text": document_text or ""
     }
 
@@ -100,9 +107,14 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
         "Accept": "application/json"
     }
 
-    # ---- Call naar Prompt Flow met goede foutafhandeling ----
+    # ---- Call naar Prompt Flow (met langere timeout) ----
     try:
-        resp = requests.post(prompt_flow_url, headers=headers, json=payload, timeout=500)
+        resp = requests.post(
+            prompt_flow_url,
+            headers=headers,
+            json=payload,
+            timeout=(10, 120)   # 10s connect, 120s read
+        )
         status = resp.status_code
         text = resp.text
         logging.info(f"PF status={status}")
@@ -125,6 +137,6 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
 
     except requests.exceptions.RequestException as e:
         logging.exception(f"PF request error: {e}")
-        # Tijdelijk de exception doorgeven om te zien wat er misgaat
+        # laat de echte fout zien i.p.v. generieke “Backend call failure”
         return func.HttpResponse(f"PF request error: {repr(e)}", status_code=502, mimetype="text/plain")
 
