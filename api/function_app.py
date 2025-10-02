@@ -102,7 +102,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
 
     # ---- Call naar Prompt Flow met goede foutafhandeling ----
     try:
-        resp = requests.post(prompt_flow_url, headers=headers, json=payload, timeout=30)
+        resp = requests.post(prompt_flow_url, headers=headers, json=payload, timeout=500)
         status = resp.status_code
         text = resp.text
         logging.info(f"PF status={status}")
