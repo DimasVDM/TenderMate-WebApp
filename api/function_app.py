@@ -125,5 +125,6 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
 
     except requests.exceptions.RequestException as e:
         logging.exception(f"PF request error: {e}")
-        return func.HttpResponse("Fout in communicatie met de AI-dienst.", status_code=502)
+        # Tijdelijk de exception doorgeven om te zien wat er misgaat
+        return func.HttpResponse(f"PF request error: {repr(e)}", status_code=502, mimetype="text/plain")
 
