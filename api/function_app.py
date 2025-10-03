@@ -32,6 +32,44 @@ def format_history_for_prompt_flow(conversation):
                 }
             )
     return chat_history
+
+
+def extract_chat_output_from_json(pf_data: dict) -> str:
+    """
+    Haal het meest waarschijnlijke veld met het antwoord uit diverse mogelijke JSON-vormen.
+    """
+    if pf_data is None:
+        return ""
+
+    # Meest gebruikelijke PF output
+    for key in ("chat_output", "output", "result", "answer", "content"):
+        if isinstance(pf_data.get(key), str) and pf_data.get(key).strip():
+            return pf_data[key].strip()
+
+    # OpenAI-achtige vorm
+    try:
+        choices = pf_data.get("choices")
+        if isinstance(choices, list) and choices:
+            msg = choices[0].get("message") or {}
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+    except Exception:
+        pass
+
+    # Als 'output' een dict is met 'message'->'content'
+    try:
+        output = pf_data.get("output")
+        if isinstance(output, dict):
+            msg = output.get("message") or {}
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+    except Exception:
+        pass
+
+    # Fallback: niets bruikbaars gevonden
+    return ""
 # -------------------------
 
 
@@ -196,21 +234,35 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                 mimetype="text/plain",
             )
 
+        # ---- interpret PF response robustly ----
+        body_text = resp.text or ""
         try:
             pf_data = resp.json()
-        except ValueError:
-            logging.error(f"PF gaf non-JSON terug: {resp.text[:400]}")
+            chat_output = extract_chat_output_from_json(pf_data)
+            if not chat_output:
+                # Als JSON is maar geen duidelijk veld, stuur de hele JSON compact terug
+                chat_output = json.dumps(pf_data)[:4000]
             return func.HttpResponse(
-                "AI-dienst gaf ongeldige JSON terug.",
-                status_code=502,
-                mimetype="text/plain",
+                body=json.dumps({"chat_output": chat_output}),
+                status_code=200,
+                mimetype="application/json",
             )
-
-        return func.HttpResponse(
-            body=json.dumps({"chat_output": pf_data.get("chat_output")}),
-            status_code=200,
-            mimetype="application/json",
-        )
+        except ValueError:
+            # Niet-JSON: kan plain text of HTML zijn
+            txt = body_text.strip()
+            if txt[:1] == "<" or txt.lower().startswith("<!doctype") or "html" in txt[:200].lower():
+                logging.error("PF returned HTML; vermoedelijk auth/endpoint issue.")
+                return func.HttpResponse(
+                    "AI-dienst gaf HTML terug (mogelijk auth/endpoint fout).",
+                    status_code=502,
+                    mimetype="text/plain",
+                )
+            # Plain text → geef het gewoon terug aan de UI
+            return func.HttpResponse(
+                body=json.dumps({"chat_output": txt[:4000]}),
+                status_code=200,
+                mimetype="application/json",
+            )
 
     except Exception as e:
         logging.error("UNHANDLED", exc_info=True)
