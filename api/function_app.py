@@ -266,6 +266,21 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
 
     except Exception as e:
         logging.error("UNHANDLED", exc_info=True)
+          # debug switch: ?debug=1 -> 200 met fouttekst zodat SWA niets maskeert
+        try:
+            qs = req.url.split("?", 1)[1] if "?" in req.url else ""
+            debug_flag = "debug=1" in qs
+        except Exception:
+            debug_flag = False
+
+        body_text = f"Unhandled server error: {repr(e)}\n{traceback.format_exc()}"
+
+        if debug_flag:
+            return func.HttpResponse(
+                json.dumps({"error": body_text}),
+                status_code=200,
+                mimetype="application/json",
+            )
         return func.HttpResponse(
             f"Unhandled server error: {repr(e)}\n{traceback.format_exc()}",
             status_code=500,
