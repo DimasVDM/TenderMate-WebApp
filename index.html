@@ -367,7 +367,6 @@
                 const p = data?.clientPrincipal;
                 const name = p?.userDetails || '';
                 const email = p?.userId || '';
-                // Initialen
                 const initials = (name || email || 'TM')
                     .split(/[ .@_-]/).filter(Boolean).slice(0,2).map(s=>s[0].toUpperCase()).join('') || 'TM';
                 userInitialsEl.textContent = initials;
@@ -380,12 +379,10 @@
         loadUser();
 
         signoutBtn.addEventListener('click', () => {
-            // SWA logout en terug naar home
             window.location.href = '/.auth/logout?post_logout_redirect_uri=/';
         });
         // ---------------------------------
 
-        // Welkomstboodschap
         function showWelcomeMessage() {
             const welcomeText = `## Hallo! Ik ben TenderMate.
 \nIk ben jouw AI-assistent, gespecialiseerd in het analyseren en verwerken van aanbestedingsdocumenten.
@@ -461,22 +458,48 @@
             const typingIndicator = addMessage('TenderMate is aan het typen...', 'bot-message typing-indicator');
 
             try {
-                const formData = new FormData();
-                formData.append('question', userMessage || `Analyseer het bijgevoegde document.`);
-                formData.append('conversation', JSON.stringify(conversation));
+                let response;
                 if (selectedFile) {
-                    formData.append('document', selectedFile);
+                    // Multipart mét bestand
+                    const fd = new FormData();
+                    fd.append('question', userMessage || 'Analyseer het bijgevoegde document.');
+                    fd.append('conversation', JSON.stringify(conversation));
+                    fd.append('document', selectedFile);
                     selectedFile = null;
+                    response = await fetch(BACKEND_API_URL, {
+                        method: 'POST',
+                        body: fd,
+                        credentials: 'include'
+                    });
+                } else {
+                    // JSON zónder bestand
+                    const payload = {
+                        question: userMessage || 'Analyseer het bijgevoegde document.',
+                        conversation
+                    };
+                    response = await fetch(BACKEND_API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                        credentials: 'include'
+                    });
                 }
 
-                const response = await fetch(BACKEND_API_URL, { method: 'POST', body: formData });
                 document.querySelectorAll('.typing-indicator').forEach(el => el.remove());
-                if (!response.ok) throw new Error(`Serverfout: ${await response.text()}`);
-                const data = await response.json();
+                const text = await response.text();
 
-                addMessage(data.chat_output, 'bot-message');
-                conversation.push({ role: 'user', content: userMessage });
-                conversation.push({ role: 'bot', content: data.chat_output });
+                if (!response.ok) {
+                    console.error('Backend error', response.status, text);
+                    addMessage(`Oeps, er is een fout opgetreden: ${text || ('HTTP ' + response.status)}`, 'bot-message');
+                    return;
+                }
+
+                let data;
+                try { data = JSON.parse(text); } catch { throw new Error(`Ongeldige JSON van server: ${text}`); }
+
+                addMessage(data.chat_output || '(geen antwoord ontvangen)', 'bot-message');
+                if (userMessage) conversation.push({ role: 'user', content: userMessage });
+                if (data.chat_output) conversation.push({ role: 'bot', content: data.chat_output });
 
             } catch (error) {
                 console.error('Fout:', error);
@@ -489,7 +512,7 @@
             const messageElement = document.createElement('div');
             messageElement.className = className;
             if (className.includes('bot-message')) {
-                let cleanMessage = message.trim();
+                let cleanMessage = (message || '').toString().trim();
                 const codeBlockRegex = /^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/;
                 const match = cleanMessage.match(codeBlockRegex);
                 if (match) cleanMessage = match[1];
