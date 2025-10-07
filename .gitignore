@@ -138,6 +138,11 @@ __azurite_db*__.json
 __pycache__/
 *.pyc
 .venv/
+api/.venv/
+api/.python_packages/
+
+# Azure Functions local
+api/local.settings.json
 
 # VS Code
 .vscode/

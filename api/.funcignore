@@ -1,0 +1,24 @@
+# Azure Functions artifacts
+bin
+obj
+appsettings.json
+local.settings.json
+
+# Azure local emulators
+__blobstorage__
+__queuesstorage__
+__azurite_db*__.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.python_packages/
+
+# VS Code / Git
+.vscode/
+.git/
+.gitignore
+
+# Overig lokaal
+*.log
