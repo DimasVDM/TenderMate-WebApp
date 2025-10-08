@@ -9,20 +9,19 @@ from pypdf import PdfReader
 from requests.exceptions import ReadTimeout
 import docx
 
+# --- optionele fallback import voor multipart ---
+try:
+    from requests_toolbelt.multipart.decoder import MultipartDecoder
+except Exception:
+    MultipartDecoder = None
+
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
-# -------------------- Config --------------------
-# Max aantal karakters dat we uit een document doorgeven aan Prompt Flow.
-# Aanpasbaar via App Setting MAX_DOC_CHARS (string -> int).
-DEFAULT_MAX_DOC_CHARS = 120_000
-try:
-    MAX_DOC_CHARS = int(os.environ.get("MAX_DOC_CHARS", DEFAULT_MAX_DOC_CHARS))
-except Exception:
-    MAX_DOC_CHARS = DEFAULT_MAX_DOC_CHARS
-# ------------------------------------------------
+# Max aantal karakters dat we richting Prompt Flow sturen vanuit geuploade tekst
+MAX_DOC_CHARS = 120_000
 
 
-# -------------------- Helpers --------------------
+# -------- Helpers --------
 def format_history_for_prompt_flow(conversation):
     """
     Convert simple [{role, content}, ...] history into Prompt Flow chat_history.
@@ -51,14 +50,10 @@ def extract_chat_output_from_json(pf_data: dict) -> str:
     """
     if pf_data is None:
         return ""
-
-    # Meest gebruikelijke PF output
     for key in ("chat_output", "output", "result", "answer", "content"):
         val = pf_data.get(key)
         if isinstance(val, str) and val.strip():
             return val.strip()
-
-    # OpenAI-achtige vorm
     try:
         choices = pf_data.get("choices")
         if isinstance(choices, list) and choices:
@@ -68,8 +63,6 @@ def extract_chat_output_from_json(pf_data: dict) -> str:
                 return content.strip()
     except Exception:
         pass
-
-    # Als 'output' een dict is met 'message'->'content'
     try:
         output = pf_data.get("output")
         if isinstance(output, dict):
@@ -79,34 +72,82 @@ def extract_chat_output_from_json(pf_data: dict) -> str:
                 return content.strip()
     except Exception:
         pass
-
-    # Fallback: niets bruikbaars gevonden
     return ""
 
 
-def _extract_text_from_pdf(file_stream: io.BytesIO) -> str:
-    """Lees tekst uit een PDF veilig uit."""
-    try:
-        reader = PdfReader(file_stream)
-        parts = []
-        for p in reader.pages:
-            # p.extract_text() kan None geven
-            parts.append(p.extract_text() or "")
-        return "\n".join(parts)
-    except Exception as e:
-        logging.exception(f"PDF parse error: {e}")
-        return ""
+def _extract_text_from_pdf_bytes(file_bytes: bytes) -> str:
+    reader = PdfReader(io.BytesIO(file_bytes))
+    parts = []
+    for p in reader.pages:
+        parts.append(p.extract_text() or "")
+    return "\n".join(parts)
 
 
-def _extract_text_from_docx(file_stream: io.BytesIO) -> str:
-    """Lees tekst uit een DOCX veilig uit."""
-    try:
-        d = docx.Document(file_stream)
-        return "\n".join([para.text for para in d.paragraphs])
-    except Exception as e:
-        logging.exception(f"DOCX parse error: {e}")
-        return ""
-# ------------------------------------------------
+def _extract_text_from_docx_bytes(file_bytes: bytes) -> str:
+    d = docx.Document(io.BytesIO(file_bytes))
+    return "\n".join([para.text for para in d.paragraphs])
+
+
+def _parse_multipart_with_toolbelt(content_type: str, body_bytes: bytes):
+    """
+    Fallback: parse multipart met requests-toolbelt.
+    Retourneert (question, conversation, document_text, debug_info)
+    """
+    if not MultipartDecoder:
+        raise ValueError("requests-toolbelt niet beschikbaar (MultipartDecoder is None)")
+
+    dec = MultipartDecoder(body_bytes, content_type)
+    question = ""
+    conversation = []
+    document_text = ""
+    debug_info = {"parts": []}
+
+    def _get_header(headers: dict, key: bytes) -> str:
+        return (headers.get(key, b"").decode(errors="ignore") or "").strip()
+
+    # Probeer 'document' te vinden; anders pak eerste part met filename
+    file_part = None
+    for p in dec.parts:
+        cd = _get_header(p.headers, b"Content-Disposition")
+        ct = _get_header(p.headers, b"Content-Type")
+        debug_info["parts"].append({"cd": cd, "ct": ct, "size": len(p.content)})
+
+        if 'name="question"' in cd and 'filename="' not in cd:
+            try:
+                question = p.text.strip()
+            except Exception:
+                question = (p.content or b"").decode("utf-8", errors="ignore").strip()
+        elif 'name="conversation"' in cd and 'filename="' not in cd:
+            raw = ""
+            try:
+                raw = p.text
+            except Exception:
+                raw = (p.content or b"").decode("utf-8", errors="ignore")
+            try:
+                conversation = json.loads(raw) if raw else []
+            except Exception:
+                conversation = []
+        elif 'filename="' in cd and ('name="document"' in cd or file_part is None):
+            # neem expliciet 'document', anders 1e file
+            file_part = p
+
+    if file_part is not None:
+        cd = _get_header(file_part.headers, b"Content-Disposition")
+        ct = _get_header(file_part.headers, b"Content-Type").lower()
+        file_bytes = file_part.content or b""
+        # mimetype detectie
+        is_pdf = ("pdf" in ct) or ('.pdf"' in cd.lower())
+        is_docx = ("wordprocessingml" in ct) or (ct == "application/vnd.openxmlformats-officedocument.wordprocessingml.document") or ('.docx"' in cd.lower())
+
+        if is_pdf:
+            document_text = _extract_text_from_pdf_bytes(file_bytes)
+        elif is_docx:
+            document_text = _extract_text_from_docx_bytes(file_bytes)
+        else:
+            document_text = "Bestandstype niet ondersteund."
+
+    return question, conversation, document_text, debug_info
+# -------------------------
 
 
 @app.route(route="TalkToTenderBot")
@@ -149,57 +190,67 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
         question = ""
         conversation = []
         document_text = ""
-        document_name = ""
-        document_mime = ""
-        doc_truncated = False
 
         try:
             ct = (req.headers.get("Content-Type") or "").lower()
             if "multipart/form-data" in ct:
                 logging.info("parse-path=multipart")
 
-                # Azure Functions Python kan form/files anders exposen; defensief zijn.
+                # 1) Probeer vriendelijke weg (kan op sommige workers werken)
+                used_toolbelt = False
                 try:
-                    form = req.form or {}
-                except AttributeError:
-                    form = {}
-                try:
-                    files = req.files or {}
-                except AttributeError:
-                    files = {}
+                    try:
+                        form = req.form or {}
+                    except AttributeError:
+                        form = {}
+                    try:
+                        files = req.files or {}
+                    except AttributeError:
+                        files = {}
 
-                question = (form.get("question") or "").strip()
-                conv_json = form.get("conversation", "[]")
-                conversation = json.loads(conv_json) if conv_json else []
+                    if form or files:
+                        question = (form.get("question") or "").strip()
+                        conv_json = form.get("conversation", "[]")
+                        conversation = json.loads(conv_json) if conv_json else []
 
-                file = files.get("document")
-                has_file = bool(file)
-                logging.info(
-                    f"parsed(multipart): question_len={len(question)}, has_file={has_file}, "
-                    f"conv_items={len(conversation)}"
-                )
+                        file = files.get("document")
+                        has_file = bool(file)
+                        logging.info(
+                            f"parsed(multipart via req.form): q_len={len(question)}, has_file={has_file}, conv_items={len(conversation)}"
+                        )
 
-                if file:
-                    # meta
-                    document_name = getattr(file, "filename", "") or ""
-                    document_mime = (getattr(file, "mimetype", "") or "").lower()
-
-                    file_bytes = file.read()
-                    file_stream = io.BytesIO(file_bytes)
-
-                    if document_mime == "application/pdf":
-                        document_text = _extract_text_from_pdf(file_stream)
-                    elif document_mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                        document_text = _extract_text_from_docx(file_stream)
+                        if file:
+                            file_bytes = file.read()
+                            mt = (getattr(file, "mimetype", "") or "").lower()
+                            if "pdf" in mt:
+                                document_text = _extract_text_from_pdf_bytes(file_bytes)
+                            elif "wordprocessingml" in mt or mt == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                                document_text = _extract_text_from_docx_bytes(file_bytes)
+                            else:
+                                document_text = "Bestandstype niet ondersteund."
                     else:
-                        # Probeer simpele fallback: treat as binary/unknown
-                        document_text = ""
-                        logging.info(f"Unsupported mimetype for inline extraction: {document_mime}")
+                        # 2) Fallback: toolbelt
+                        body_bytes = req.get_body() or b""
+                        if not body_bytes:
+                            raise ValueError("Lege multipart body.")
+                        if not MultipartDecoder:
+                            raise ValueError("requests-toolbelt niet aanwezig voor multipart fallback.")
 
-                    # Truncate als extreem groot
-                    if document_text and len(document_text) > MAX_DOC_CHARS:
-                        document_text = document_text[:MAX_DOC_CHARS]
-                        doc_truncated = True
+                        question, conversation, document_text, dbg = _parse_multipart_with_toolbelt(
+                            req.headers.get("Content-Type", ""), body_bytes
+                        )
+                        used_toolbelt = True
+                        logging.info(
+                            f"parsed(multipart via toolbelt): q_len={len(question)}, doc_len={len(document_text)}, conv_items={len(conversation)}"
+                        )
+
+                except Exception as mpe:
+                    logging.exception(f"Multipart parse error: {mpe}")
+                    return func.HttpResponse(
+                        "Ongeldig verzoek (parse error).",
+                        status_code=400,
+                        mimetype="text/plain",
+                    )
 
             else:
                 logging.info("parse-path=json")
@@ -207,7 +258,6 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                 try:
                     body = req.get_json()
                 except ValueError:
-                    # fallback: als body raw JSON is maar content-type niet klopt
                     raw = req.get_body()
                     if raw:
                         try:
@@ -218,38 +268,29 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                 question = (body.get("question") or body.get("chat_input") or "").strip()
                 conversation = body.get("conversation", []) or []
                 document_text = body.get("document_text", "") or ""
-                document_name = body.get("document_name", "") or ""
-                document_mime = body.get("document_mime", "") or ""
-
-                if document_text and len(document_text) > MAX_DOC_CHARS:
-                    document_text = document_text[:MAX_DOC_CHARS]
-                    doc_truncated = True
 
                 logging.info(
                     f"parsed(json): question_len={len(question)}, has_doc_text={bool(document_text)}, "
                     f"conv_items={len(conversation)}"
                 )
         except Exception as pe:
-            logging.exception(f"Invoer parse error: {pe}")
+            logging.exception(f"Invoer parse error outer: {pe}")
             return func.HttpResponse(
                 "Ongeldig verzoek (parse error).",
                 status_code=400,
                 mimetype="text/plain",
             )
 
+        # --- knip document_text af op MAX_DOC_CHARS ---
+        if document_text and len(document_text) > MAX_DOC_CHARS:
+            logging.info(f"document_text truncated from {len(document_text)} to {MAX_DOC_CHARS}")
+            document_text = document_text[:MAX_DOC_CHARS]
+
         # ---- build PF payload ----
         payload = {
             "chat_input": question or "Analyseer het bijgevoegde document.",
             "chat_history": format_history_for_prompt_flow(conversation),
-
-            # Documentvelden voor de PF flow (beoordeling / context)
             "document_text": document_text or "",
-            "document_name": document_name,
-            "document_mime": document_mime,
-            "document_length": len(document_text or ""),
-            "document_truncated": doc_truncated,
-            # Je kunt eventueel ook een 'mode' meegeven, als je PF flow dat ondersteunt:
-            # "mode": "review" als er document_text is, anders "chat"
         }
         headers = {
             "Authorization": f"Bearer {prompt_flow_api_key}",
@@ -296,23 +337,13 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             pf_data = resp.json()
             chat_output = extract_chat_output_from_json(pf_data)
             if not chat_output:
-                # Als JSON is maar geen duidelijk veld, stuur de hele JSON compact terug
                 chat_output = json.dumps(pf_data)[:4000]
-
-            # Voeg bij truncatie een korte noot toe (zodat de gebruiker weet waarom)
-            if doc_truncated:
-                chat_output += (
-                    "\n\n*Let op:* het geüploade document was erg groot; "
-                    "alleen het eerste deel is beoordeeld."
-                )
-
             return func.HttpResponse(
                 body=json.dumps({"chat_output": chat_output}),
                 status_code=200,
                 mimetype="application/json",
             )
         except ValueError:
-            # Niet-JSON: kan plain text of HTML zijn
             txt = body_text.strip()
             if txt[:1] == "<" or txt.lower().startswith("<!doctype") or "html" in txt[:200].lower():
                 logging.error("PF returned HTML; vermoedelijk auth/endpoint issue.")
@@ -321,7 +352,6 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                     status_code=502,
                     mimetype="text/plain",
                 )
-            # Plain text → geef het gewoon terug aan de UI
             return func.HttpResponse(
                 body=json.dumps({"chat_output": txt[:4000]}),
                 status_code=200,
@@ -338,6 +368,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             debug_flag = False
 
         body_text = f"Unhandled server error: {repr(e)}\n{traceback.format_exc()}"
+
         if debug_flag:
             return func.HttpResponse(
                 json.dumps({"error": body_text}),
