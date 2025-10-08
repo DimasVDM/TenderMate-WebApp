@@ -11,7 +11,18 @@ import docx
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
-# -------- Helpers --------
+# -------------------- Config --------------------
+# Max aantal karakters dat we uit een document doorgeven aan Prompt Flow.
+# Aanpasbaar via App Setting MAX_DOC_CHARS (string -> int).
+DEFAULT_MAX_DOC_CHARS = 120_000
+try:
+    MAX_DOC_CHARS = int(os.environ.get("MAX_DOC_CHARS", DEFAULT_MAX_DOC_CHARS))
+except Exception:
+    MAX_DOC_CHARS = DEFAULT_MAX_DOC_CHARS
+# ------------------------------------------------
+
+
+# -------------------- Helpers --------------------
 def format_history_for_prompt_flow(conversation):
     """
     Convert simple [{role, content}, ...] history into Prompt Flow chat_history.
@@ -43,8 +54,9 @@ def extract_chat_output_from_json(pf_data: dict) -> str:
 
     # Meest gebruikelijke PF output
     for key in ("chat_output", "output", "result", "answer", "content"):
-        if isinstance(pf_data.get(key), str) and pf_data.get(key).strip():
-            return pf_data[key].strip()
+        val = pf_data.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
 
     # OpenAI-achtige vorm
     try:
@@ -70,7 +82,31 @@ def extract_chat_output_from_json(pf_data: dict) -> str:
 
     # Fallback: niets bruikbaars gevonden
     return ""
-# -------------------------
+
+
+def _extract_text_from_pdf(file_stream: io.BytesIO) -> str:
+    """Lees tekst uit een PDF veilig uit."""
+    try:
+        reader = PdfReader(file_stream)
+        parts = []
+        for p in reader.pages:
+            # p.extract_text() kan None geven
+            parts.append(p.extract_text() or "")
+        return "\n".join(parts)
+    except Exception as e:
+        logging.exception(f"PDF parse error: {e}")
+        return ""
+
+
+def _extract_text_from_docx(file_stream: io.BytesIO) -> str:
+    """Lees tekst uit een DOCX veilig uit."""
+    try:
+        d = docx.Document(file_stream)
+        return "\n".join([para.text for para in d.paragraphs])
+    except Exception as e:
+        logging.exception(f"DOCX parse error: {e}")
+        return ""
+# ------------------------------------------------
 
 
 @app.route(route="TalkToTenderBot")
@@ -113,14 +149,16 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
         question = ""
         conversation = []
         document_text = ""
+        document_name = ""
+        document_mime = ""
+        doc_truncated = False
 
         try:
             ct = (req.headers.get("Content-Type") or "").lower()
             if "multipart/form-data" in ct:
                 logging.info("parse-path=multipart")
 
-                # Azure Functions for Python may expose form/files depending on the worker.
-                # Be defensive and handle AttributeError.
+                # Azure Functions Python kan form/files anders exposen; defensief zijn.
                 try:
                     form = req.form or {}
                 except AttributeError:
@@ -142,30 +180,34 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                 )
 
                 if file:
+                    # meta
+                    document_name = getattr(file, "filename", "") or ""
+                    document_mime = (getattr(file, "mimetype", "") or "").lower()
+
                     file_bytes = file.read()
                     file_stream = io.BytesIO(file_bytes)
-                    mt = (getattr(file, "mimetype", "") or "").lower()
-                    if mt == "application/pdf":
-                        reader = PdfReader(file_stream)
-                        parts = []
-                        for p in reader.pages:
-                            parts.append(p.extract_text() or "")
-                        document_text = "\n".join(parts)
-                    elif (
-                        mt
-                        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    ):
-                        d = docx.Document(file_stream)
-                        document_text = "\n".join([para.text for para in d.paragraphs])
+
+                    if document_mime == "application/pdf":
+                        document_text = _extract_text_from_pdf(file_stream)
+                    elif document_mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                        document_text = _extract_text_from_docx(file_stream)
                     else:
-                        document_text = "Bestandstype niet ondersteund."
+                        # Probeer simpele fallback: treat as binary/unknown
+                        document_text = ""
+                        logging.info(f"Unsupported mimetype for inline extraction: {document_mime}")
+
+                    # Truncate als extreem groot
+                    if document_text and len(document_text) > MAX_DOC_CHARS:
+                        document_text = document_text[:MAX_DOC_CHARS]
+                        doc_truncated = True
+
             else:
                 logging.info("parse-path=json")
                 body = {}
                 try:
                     body = req.get_json()
                 except ValueError:
-                    # If Content-Type is wrong but body is JSON, try fallback:
+                    # fallback: als body raw JSON is maar content-type niet klopt
                     raw = req.get_body()
                     if raw:
                         try:
@@ -176,6 +218,12 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                 question = (body.get("question") or body.get("chat_input") or "").strip()
                 conversation = body.get("conversation", []) or []
                 document_text = body.get("document_text", "") or ""
+                document_name = body.get("document_name", "") or ""
+                document_mime = body.get("document_mime", "") or ""
+
+                if document_text and len(document_text) > MAX_DOC_CHARS:
+                    document_text = document_text[:MAX_DOC_CHARS]
+                    doc_truncated = True
 
                 logging.info(
                     f"parsed(json): question_len={len(question)}, has_doc_text={bool(document_text)}, "
@@ -193,7 +241,15 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
         payload = {
             "chat_input": question or "Analyseer het bijgevoegde document.",
             "chat_history": format_history_for_prompt_flow(conversation),
+
+            # Documentvelden voor de PF flow (beoordeling / context)
             "document_text": document_text or "",
+            "document_name": document_name,
+            "document_mime": document_mime,
+            "document_length": len(document_text or ""),
+            "document_truncated": doc_truncated,
+            # Je kunt eventueel ook een 'mode' meegeven, als je PF flow dat ondersteunt:
+            # "mode": "review" als er document_text is, anders "chat"
         }
         headers = {
             "Authorization": f"Bearer {prompt_flow_api_key}",
@@ -242,6 +298,14 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             if not chat_output:
                 # Als JSON is maar geen duidelijk veld, stuur de hele JSON compact terug
                 chat_output = json.dumps(pf_data)[:4000]
+
+            # Voeg bij truncatie een korte noot toe (zodat de gebruiker weet waarom)
+            if doc_truncated:
+                chat_output += (
+                    "\n\n*Let op:* het geüploade document was erg groot; "
+                    "alleen het eerste deel is beoordeeld."
+                )
+
             return func.HttpResponse(
                 body=json.dumps({"chat_output": chat_output}),
                 status_code=200,
@@ -266,7 +330,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
 
     except Exception as e:
         logging.error("UNHANDLED", exc_info=True)
-          # debug switch: ?debug=1 -> 200 met fouttekst zodat SWA niets maskeert
+        # debug switch: ?debug=1 -> 200 met fouttekst zodat SWA niets maskeert
         try:
             qs = req.url.split("?", 1)[1] if "?" in req.url else ""
             debug_flag = "debug=1" in qs
@@ -274,7 +338,6 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             debug_flag = False
 
         body_text = f"Unhandled server error: {repr(e)}\n{traceback.format_exc()}"
-
         if debug_flag:
             return func.HttpResponse(
                 json.dumps({"error": body_text}),

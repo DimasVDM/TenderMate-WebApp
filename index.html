@@ -385,11 +385,37 @@
 
         // Welkomstboodschap
         function showWelcomeMessage() {
-            const welcomeText = `## Hallo! Ik ben TenderMate.
-\nIk ben jouw AI-assistent, gespecialiseerd in het analyseren en verwerken van aanbestedingsdocumenten.
-\n\nHoe kan ik je vandaag helpen? Je kunt bijvoorbeeld:
-\n- Een document uploaden en vragen om een samenvatting.
-\n- Mij vragen een concepttekst op te stellen voor een kwaliteitsvraag.`;
+            const welcomeText = `## Welkom bij TenderMate
+
+TenderMate is uw AI-assistent voor aanbestedingen. U kunt mij op drie manieren inzetten:
+
+### 1) Quickscan (analyse en samenvatting)
+- **Aanleveren:** plaats *alle* aanbestedingsstukken (leidraad, PvE/PvW, conceptovereenkomst, Nota’s van Inlichtingen, bijlagen) **als één map** in SharePoint bij de betreffende klant/case.
+- **In de chat:** vermeld de dossier-/mapnaam (en eventuele aandachtspunten).
+- **Resultaat:** compacte samenvatting, go/no-go-indicaties, risico’s/KO-eisen, ontbrekende stukken, planning en informatievragen.
+
+### 2) Opzet schrijven (conceptteksten)
+- **Vraag een concepttekst** voor een kwaliteitsvraag of plan van aanpak.
+- Geef relevante context mee (perceel/scope, beoordelingskader en weging, pagina-eisen, differentiatoren).
+- Ik lever een eerste versie met heldere structuur, argumentatie en toetsing aan de eisen.
+
+### 3) Beoordelen & verbeteren (review)
+- **Plak uw tekst rechtstreeks in de chat** voor feedback.
+- Of lever een document aan met uw concepttekst, via de uploadknop.
+- Ik doe een inhouds- en kwaliteitstoets (eisen, consistentie, overtuigingskracht, lengte), licht verbeterpunten toe en geef desgewenst een herformuleerde versie terug.
+
+---
+
+**Bestanden aanleveren**
+- Het uploaden van bestanden via de chat is **niet vereist**: werk bij voorkeur via **SharePoint** (één complete map per aanbesteding).  
+- Voor korte fragmenten kunt u tekst direct **plakken** in de chat of leveren via de uploadknop.
+
+**Voorbeelden om te starten**
+- “Maak een quickscan van het SharePoint-dossier **[mapnaam]**.”
+- “Schrijf een conceptantwoord op kwaliteitsvraag **[nummer/titel]** (max. 2 pagina’s).”
+- “Beoordeel en verbeter onderstaande tekst op overtuigingskracht en eisenconformiteit.”
+
+Klaar om te beginnen? Vertel waarvoor u TenderMate nu wilt inzetten.`;
             addMessage(welcomeText, 'bot-message');
         }
 
