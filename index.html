@@ -1,561 +1,627 @@
 <!DOCTYPE html>
 <html lang="nl">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TenderMate</title>
-    <!-- Fonts & externe libs -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <style>
-        :root {
-            --it-workz-orange: #F58A07;
-            --background-dark:  #3e3e3f;
-            --chat-window-dark: #838387;
-            --input-area-dark: #232426;
-            --user-bubble: #3A3A3A;
-            --text-primary: #E3E3E3;
-            --text-secondary: #9B9B9B;
-            --border-color: #353739;
-            --send-button-bg: #3A3A3A;
-            --scrollbar-thumb: #4A4E57;
-            --table-header-bg: #353739;
-            --shadow-soft: 0 2px 14px 0 rgba(18,18,22,0.12);
-        }
-        body {
-            font-family: 'Inter', sans-serif;
-            font-size: 16px;
-            margin: 0;
-            background-color: var(--background-dark);
-            color: var(--text-primary);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            overflow: hidden;
-        }
-        #app-wrapper { width: 100%; height: 100%; display: flex; flex-direction: column; }
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>TenderMate</title>
 
-        /* Header + sign out */
-        header.topbar{
-            padding: 15px 25px;
-            flex-shrink: 0;
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-        }
-        #app-title { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.5px;}
-        #app-title .tender-part { color: var(--text-primary); }
-        #app-title .mate-part { color: var(--it-workz-orange); }
+  <!-- Fonts & libs -->
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 
-        .user-actions { display:flex; align-items:center; gap:10px; }
-        .user-chip {
-            display:flex; align-items:center; gap:8px;
-            padding:4px 10px; border-radius:999px;
-            border:1px solid var(--border-color);
-            background: rgba(0,0,0,0.15);
-            color: var(--text-secondary);
-            font-size: 12px;
-            line-height: 1;
-        }
-        .user-chip .avatar {
-            width:20px; height:20px; border-radius:50%;
-            display:inline-flex; align-items:center; justify-content:center;
-            background: var(--input-area-dark); color:#fff; font-weight:600; font-size:11px;
-        }
-        .signout-btn{
-            display:inline-flex; align-items:center; gap:8px;
-            padding:8px 12px; border-radius:12px;
-            border:1px solid var(--border-color);
-            background: #2a2b2d;
-            color: var(--text-primary);
-            cursor:pointer;
-            transition: background .15s, transform .12s;
-        }
-        .signout-btn:hover{ background:#2f3032; }
-        .signout-btn:active{ transform: scale(0.98); }
-        .signout-btn svg{ width:18px; height:18px; display:block; }
+  <style>
+    :root{
+      --it-workz-orange:#F58A07;
+      --background-dark:#3e3e3f;
+      --chat-window-dark:#838387;
+      --input-area-dark:#232426;
+      --user-bubble:#3A3A3A;
+      --text-primary:#E3E3E3;
+      --text-secondary:#9B9B9B;
+      --border-color:#353739;
+      --send-button-bg:#3A3A3A;
+      --scrollbar-thumb:#4A4E57;
+      --table-header-bg:#353739;
+      --shadow-soft:0 2px 14px 0 rgba(18,18,22,0.12);
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      height:100vh;
+      overflow:hidden;
+      display:flex;
+      justify-content:center;
+      align-items:center;
+      background:var(--background-dark);
+      color:var(--text-primary);
+      font:16px/1.5 'Inter',sans-serif;
+    }
+    #app-wrapper{width:100%;height:100%;display:flex;flex-direction:column}
 
-        #chat-container {
-            flex-grow: 1;
-            width: 100%;
-            max-width: 800px;
-            margin: 0 auto;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            position: relative;
-        }
-        #chat-window {
-            flex-grow: 1;
-            overflow-y: scroll;
-            padding: 0 10px;
-            display: flex;
-            flex-direction: column;
-            scroll-behavior: smooth;
-        }
-        #chat-window::-webkit-scrollbar { width: 8px; }
-        #chat-window::-webkit-scrollbar-track { background: transparent; }
-        #chat-window::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
-        #chat-window { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+    /* Header */
+    header.topbar{
+      padding:15px 25px;
+      flex-shrink:0;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+    }
+    #app-title{font-size:1.5rem;font-weight:700;letter-spacing:-.5px}
+    #app-title .tender-part{color:var(--text-primary)}
+    #app-title .mate-part{color:var(--it-workz-orange)}
+    .user-actions{display:flex;align-items:center;gap:10px}
+    .user-chip{
+      display:flex;align-items:center;gap:8px;
+      padding:4px 10px;border-radius:999px;
+      border:1px solid var(--border-color);
+      background:rgba(0,0,0,.15);
+      color:var(--text-secondary);
+      font-size:12px;line-height:1
+    }
+    .user-chip .avatar{
+      width:20px;height:20px;border-radius:50%;
+      display:inline-flex;align-items:center;justify-content:center;
+      background:var(--input-area-dark);color:#fff;font-weight:600;font-size:11px
+    }
+    .signout-btn{
+      display:inline-flex;align-items:center;gap:8px;
+      padding:8px 12px;border-radius:12px;
+      border:1px solid var(--border-color);
+      background:#2a2b2d;color:var(--text-primary);
+      cursor:pointer;transition:background .15s,transform .12s
+    }
+    .signout-btn:hover{background:#2f3032}
+    .signout-btn:active{transform:scale(.98)}
+    .signout-btn svg{width:18px;height:18px;display:block}
 
-        .user-message {
-            background: linear-gradient(96deg, #35373B 70%, #232426 100%);
-            color: var(--text-primary);
-            align-self: flex-end;
-            margin-left: auto;
-            border-bottom-right-radius: 7px;
-            border-radius: 18px;
-            max-width: 82%;
-            border: 1px solid #282829;
-            box-shadow: 0 2px 12px rgba(40,40,48,0.09);
-            animation: userPopIn 0.27s cubic-bezier(.33,1.4,.57,1) both;
-            word-break: break-word;
-            line-height: 1.6;
-            margin-bottom: 14px;
-            padding: 14px 18px 14px 18px;
-            font-size: 1rem;
-            white-space: pre-line;
-        }
-        @keyframes userPopIn {
-            from { opacity: 0; transform: scale(0.95) translateY(16px);}
-            to   { opacity: 1; transform: scale(1) translateY(0);}
-        }
-        .bot-message {
-            background: transparent !important;
-            color: var(--text-primary);
-            align-self: flex-start;
-            margin-right: auto;
-            padding: 0;
-            margin-bottom: 14px;
-            margin-left: 4px;
-            max-width: 92%;
-            border-radius: 0;
-            box-shadow: none;
-            animation: botFadeIn 0.39s cubic-bezier(.42,1.2,.57,1) both;
-            word-break: break-word;
-            line-height: 1.6;
-        }
-        @keyframes botFadeIn {
-            from { opacity: 0; transform: translateX(-20px);}
-            to   { opacity: 1; transform: translateX(0);}
-        }
-        .bot-message > * { margin-left: 2px; margin-right: 2px; }
-        .bot-message pre > code, .bot-message table {
-            background-color: #18191A !important;
-            border-radius: 8px;
-            margin: 1em 0;
-            padding: 1em !important;
-        }
-        .bot-message h1, .bot-message h2 {
-            font-weight: 700;
-            color: #fff;
-            margin-top: 1.3em; margin-bottom: 0.7em;
-            padding-bottom: 0.22em;
-            border-bottom: 1px solid var(--border-color);
-        }
+    /* Chat container */
+    #chat-container{
+      flex-grow:1;width:100%;max-width:800px;margin:0 auto;
+      display:flex;flex-direction:column;overflow:hidden;position:relative
+    }
+    #chat-window{
+      flex-grow:1;overflow-y:auto;padding:0 10px;display:flex;flex-direction:column;scroll-behavior:smooth
+    }
+    #chat-window::-webkit-scrollbar{width:8px}
+    #chat-window::-webkit-scrollbar-track{background:transparent}
+    #chat-window::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:4px}
+    #chat-window{scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent}
 
-        #prompt-container {
-            width: 100%;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 10px 20px 30px 20px;
-            box-sizing: border-box;
-        }
-        #chat-form {
-            display: flex;
-            flex-direction: column;
-            gap: 0.35rem;
-            padding: 8px;
-            border-radius: 22px;
-            background: var(--input-area-dark);
-            border: 1px solid var(--border-color);
-            box-shadow: var(--shadow-soft);
-            transition: border 0.18s;
-            min-height: 62px;
-        }
-        #chat-form:focus-within { border: 1.5px solid var(--it-workz-orange); }
-        #input-row {
-            display: flex;
-            align-items: flex-start;
-            width: 100%;
-            min-height: 48px;
-            gap: 8px;
-        }
-        #upload-wrapper { position: relative; align-self: flex-start; margin-top: 2px;}
-        #upload-button {
-            width: 34px;
-            height: 34px;
-            border: none;
-            background: transparent;
-            color: var(--text-secondary);
-            cursor: pointer;
-            border-radius: 50%;
-            display: flex;
-            align-items: flex-start;
-            justify-content: center;
-            padding: 0;
-            transition: background 0.16s, color 0.18s, transform 0.18s cubic-bezier(.52,1.4,.32,1.1);
-        }
-        #upload-button:hover, #upload-button:focus {
-            background: #252527;
-            color: var(--it-workz-orange);
-            transform: scale(1.12) rotate(-8deg);
-        }
-        #upload-button:active { transform: scale(0.92) rotate(5deg); }
-        #upload-button svg {
-            width: 20px !important;
-            height: 20px !important;
-            display: block;
-            stroke-width: 2.2;
-        }
-        #upload-popover {
-            display: none;
-            position: absolute;
-            bottom: 46px;
-            left: 0;
-            background: var(--input-area-dark);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.16);
-            width: 240px;
-            z-index: 10;
-            overflow: hidden;
-        }
-        .popover-item { display: flex; align-items: center; padding: 12px 16px; cursor: pointer; color: var(--text-primary);}
-        .popover-item:hover { background-color: #353739;}
-        .popover-item svg { width: 19px; height: 19px; margin-right: 10px;}
-        #file-input { display: none; }
-        #message-input {
-            flex-grow: 1;
-            border: none;
-            background: transparent;
-            color: var(--text-primary);
-            font-family: 'Inter', sans-serif;
-            font-size: 16px;
-            line-height: 1.55;
-            resize: none;
-            outline: none;
-            padding: 14px 10px 10px 14px;
-            min-height: 40px;
-            max-height: 160px;
-            overflow-y: auto;
-            box-sizing: border-box;
-            vertical-align: top;
-            border-radius: 14px;
-            margin: 0;
-        }
-        #message-input::placeholder { color: var(--text-secondary); opacity: 0.87; }
-        #send-button {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            width: 36px;
-            height: 36px;
-            border: none;
-            border-radius: 50%;
-            background-color: var(--send-button-bg);
-            color: var(--text-primary);
-            cursor: pointer;
-            margin-left: 6px;
-            margin-top: 3px;
-            transition: background 0.18s, color 0.18s, transform 0.15s;
-        }
-        #send-button.active, #send-button:focus, #send-button:hover { background: var(--it-workz-orange); color: #fff; transform: scale(1.11); }
-        #send-button:active { transform: scale(0.95); }
-        #send-button svg { width: 19px; height: 19px; display: block; }
+    .user-message{
+      background:linear-gradient(96deg,#35373B 70%,#232426 100%);
+      color:var(--text-primary);
+      align-self:flex-end;margin-left:auto;border-bottom-right-radius:7px;border-radius:18px;
+      max-width:82%;border:1px solid #282829;box-shadow:0 2px 12px rgba(40,40,48,.09);
+      animation:userPopIn .27s cubic-bezier(.33,1.4,.57,1) both;word-break:break-word;line-height:1.6;
+      margin-bottom:14px;padding:14px 18px;font-size:1rem;white-space:pre-line
+    }
+    @keyframes userPopIn{from{opacity:0;transform:scale(.95) translateY(16px)}to{opacity:1;transform:scale(1) translateY(0)}}
+    .bot-message{
+      background:transparent!important;color:var(--text-primary);
+      align-self:flex-start;margin-right:auto;padding:0;margin:0 0 14px 4px;max-width:92%;
+      border-radius:0;box-shadow:none;animation:botFadeIn .39s cubic-bezier(.42,1.2,.57,1) both;
+      word-break:break-word;line-height:1.6
+    }
+    @keyframes botFadeIn{from{opacity:0;transform:translateX(-20px)}to{opacity:1;transform:translateX(0)}}
+    .bot-message pre>code,.bot-message table{background:#18191A!important;border-radius:8px;margin:1em 0;padding:1em!important}
+    .bot-message h1,.bot-message h2{font-weight:700;color:#fff;margin-top:1.3em;margin-bottom:.7em;padding-bottom:.22em;border-bottom:1px solid var(--border-color)}
 
-        #file-attachment-container { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 3px; }
-        .file-pill {
-            display: flex; align-items: center; gap:4px;
-            background: #212223;
-            padding: 5px 10px;
-            border-radius: 14px;
-            font-size: 13px; color: var(--text-primary);
-            box-shadow: 0 1px 6px rgba(50,50,60,0.04);
-            border: 1px solid #2c2c2d;
-        }
-        .file-pill svg { width: 15px; height: 15px; margin-right: 7px; color: var(--text-secondary);}
-        .file-pill-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
-        .file-pill-remove {
-            margin-left: 7px; cursor: pointer; width: 19px; height: 19px;
-            display: flex; align-items: center; justify-content: center; border-radius: 50%;
-            transition: background 0.13s;
-        }
-        .file-pill-remove:hover { background: #2e2f30; }
-    </style>
+    /* Mode buttons row */
+    .mode-row{
+      width:100%;max-width:800px;margin:10px auto 0 auto;padding:0 20px 8px 20px;
+      display:flex;gap:8px;align-items:center;justify-content:flex-start;flex-wrap:wrap
+    }
+    .mode-btn{
+      display:inline-flex;align-items:center;gap:8px;
+      padding:10px 14px;border-radius:14px;border:1px solid var(--border-color);
+      background:#2a2b2d;color:var(--text-primary);cursor:pointer;
+      transition:transform .12s,background .15s,border-color .15s;font-weight:600;font-size:14px
+    }
+    .mode-btn:hover{background:#303133;border-color:#3b3d40;transform:translateY(-1px)}
+    .mode-btn.active{background:var(--it-workz-orange);color:#fff;border-color:transparent}
+    .mode-btn svg{width:18px;height:18px}
+
+    /* Prompt area */
+    #prompt-container{width:100%;max-width:800px;margin:0 auto;padding:10px 20px 30px 20px}
+    #chat-form{
+      display:flex;flex-direction:column;gap:.35rem;padding:8px;border-radius:22px;
+      background:var(--input-area-dark);border:1px solid var(--border-color);box-shadow:var(--shadow-soft);
+      transition:border .18s;min-height:62px
+    }
+    #chat-form:focus-within{border:1.5px solid var(--it-workz-orange)}
+    #input-row{display:flex;align-items:flex-start;width:100%;min-height:48px;gap:8px}
+
+    /* Upload */
+    #upload-wrapper{position:relative;align-self:flex-start;margin-top:2px}
+    #upload-button{
+      width:34px;height:34px;border:none;background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:50%;
+      display:flex;align-items:flex-start;justify-content:center;padding:0;transition:background .16s,color .18s,transform .18s cubic-bezier(.52,1.4,.32,1.1)
+    }
+    #upload-button:hover,#upload-button:focus{background:#252527;color:var(--it-workz-orange);transform:scale(1.12) rotate(-8deg)}
+    #upload-button:active{transform:scale(.92) rotate(5deg)}
+    #upload-button svg{width:20px;height:20px;stroke-width:2.2;display:block}
+    #upload-popover{
+      display:none;position:absolute;bottom:46px;left:0;background:var(--input-area-dark);
+      border:1px solid var(--border-color);border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.16);
+      width:240px;z-index:10;overflow:hidden
+    }
+    .popover-item{display:flex;align-items:center;padding:12px 16px;cursor:pointer;color:var(--text-primary)}
+    .popover-item:hover{background:#353739}
+    .popover-item svg{width:19px;height:19px;margin-right:10px}
+    #file-input{display:none}
+
+    /* Input */
+    #message-input{
+      flex-grow:1;border:none;background:transparent;color:var(--text-primary);
+      font:16px/1.55 'Inter',sans-serif;resize:none;outline:none;padding:14px 10px 10px 14px;
+      min-height:40px;max-height:160px;overflow-y:auto;border-radius:14px;margin:0
+    }
+    #message-input::placeholder{color:var(--text-secondary);opacity:.87}
+    #send-button{
+      display:flex;justify-content:center;align-items:center;width:36px;height:36px;border:none;border-radius:50%;
+      background:var(--send-button-bg);color:var(--text-primary);cursor:pointer;margin-left:6px;margin-top:3px;
+      transition:background .18s,color .18s,transform .15s
+    }
+    #send-button.active,#send-button:focus,#send-button:hover{background:var(--it-workz-orange);color:#fff;transform:scale(1.11)}
+    #send-button:active{transform:scale(.95)}
+    #send-button svg{width:19px;height:19px;display:block}
+
+    /* File pills */
+    #file-attachment-container{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:3px}
+    .file-pill{
+      display:flex;align-items:center;gap:4px;background:#212223;padding:5px 10px;border-radius:14px;
+      font-size:13px;color:var(--text-primary);box-shadow:0 1px 6px rgba(50,50,60,.04);border:1px solid #2c2c2d
+    }
+    .file-pill svg{width:15px;height:15px;margin-right:7px;color:var(--text-secondary)}
+    .file-pill-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px}
+    .file-pill-remove{
+      margin-left:7px;cursor:pointer;width:19px;height:19px;display:flex;align-items:center;justify-content:center;border-radius:50%;
+      transition:background .13s
+    }
+    .file-pill-remove:hover{background:#2e2f30}
+
+    /* ===== Modal (mooier & breder) ===== */
+    .modal-overlay{
+      position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:saturate(110%) blur(1px);
+      display:none;align-items:center;justify-content:center;z-index:40
+    }
+    .modal{
+      width:clamp(540px, 70vw, 760px);
+      max-height:85vh;overflow:auto;
+      background:#1f2022;border:1px solid var(--border-color);
+      border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.45)
+    }
+    .modal-header{
+      padding:16px 18px;border-bottom:1px solid var(--border-color);
+      display:flex;align-items:center;justify-content:space-between;font-weight:700
+    }
+    .modal-body{padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+    .modal-actions{
+      padding:12px 18px;border-top:1px solid var(--border-color);
+      display:flex;gap:10px;justify-content:flex-end
+    }
+    .input, .textarea{
+      width:100%;color:var(--text-primary);background:#17181a;border:1px solid #2c2d30;border-radius:12px;
+      padding:12px 12px;font:14px 'Inter',sans-serif
+    }
+    .input:focus,.textarea:focus{outline:none;border-color:var(--it-workz-orange)}
+    .textarea{min-height:140px;resize:vertical}
+    .btn{padding:10px 14px;border-radius:12px;border:1px solid var(--border-color);background:#2a2b2d;color:#fff;cursor:pointer}
+    .btn.primary{background:var(--it-workz-orange);border-color:transparent}
+    .btn.ghost{background:#2a2b2d}
+    .btn:disabled{opacity:.6;cursor:not-allowed}
+    @media (max-width:640px){
+      .modal{width:92vw;border-radius:14px}
+    }
+  </style>
 </head>
 <body>
-    <div id="app-wrapper">
-        <header class="topbar">
-            <div id="app-title">
-                <span class="tender-part">Tender</span><span class="mate-part">Mate</span>
-            </div>
-            <div class="user-actions">
-                <div class="user-chip" id="user-chip" title="Ingelogd">
-                    <span class="avatar" id="user-initials">TM</span>
-                    <span id="user-shortname">Gebruiker</span>
-                </div>
-                <button id="signout" class="signout-btn" type="button">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M10 17v-2h5V9h-5V7h7v10h-7zM8 7H5v10h3v2H3V5h5v2z"/></svg>
-                    <span>Sign out</span>
-                </button>
-            </div>
-        </header>
-
-        <main id="chat-container">
-            <div id="chat-window"></div>
-        </main>
-
-        <div id="prompt-container">
-            <form id="chat-form">
-                <div id="file-attachment-container"></div>
-                <div id="input-row">
-                    <div id="upload-wrapper">
-                        <button type="button" id="upload-button" aria-label="Bestand uploaden">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" fill="none" stroke="currentColor">
-                                <line x1="11" y1="5" x2="11" y2="17"/>
-                                <line x1="5" y1="11" x2="17" y2="11"/>
-                            </svg>
-                        </button>
-                        <div id="upload-popover">
-                            <label for="file-input" class="popover-item">
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.122 2.122l7.81-7.81" /></svg>
-                                <span>Bestand uploaden</span>
-                            </label>
-                        </div>
-                    </div>
-                    <textarea id="message-input" placeholder="Stel een vraag aan TenderMate..." rows="1"></textarea>
-                    <button type="submit" id="send-button">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-                        </svg>
-                    </button>
-                </div>
-                <input type="file" id="file-input" name="document" accept=".pdf,.docx">
-            </form>
+  <div id="app-wrapper">
+    <!-- Topbar -->
+    <header class="topbar">
+      <div id="app-title"><span class="tender-part">Tender</span><span class="mate-part">Mate</span></div>
+      <div class="user-actions">
+        <div class="user-chip" id="user-chip" title="Ingelogd">
+          <span class="avatar" id="user-initials">TM</span>
+          <span id="user-shortname">Gebruiker</span>
         </div>
+        <button id="signout" class="signout-btn" type="button">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M10 17v-2h5V9h-5V7h7v10h-7zM8 7H5v10h3v2H3V5h5v2z"/></svg>
+          <span>Sign out</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Chat -->
+    <main id="chat-container">
+      <div id="chat-window"></div>
+    </main>
+
+    <!-- Mode buttons (boven de input) -->
+    <div class="mode-row">
+      <button class="mode-btn" id="btn-quickscan" data-mode="QUICKSCAN">
+        <!-- magnifier icon -->
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        Quickscan
+      </button>
+      <button class="mode-btn" id="btn-draft" data-mode="DRAFT">
+        <!-- pen icon -->
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        Opzet schrijven
+      </button>
+      <button class="mode-btn" id="btn-review" data-mode="REVIEW">
+        <!-- checklist icon -->
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5l-4 4V5a2 2 0 0 1 2-2h12"/></svg>
+        Beoordelen
+      </button>
     </div>
 
-    <script>
-        const chatWindow = document.getElementById('chat-window');
-        const chatForm = document.getElementById('chat-form');
-        const messageInput = document.getElementById('message-input');
-        const sendButton = document.getElementById('send-button');
-        const fileInput = document.getElementById('file-input');
-        const uploadButton = document.getElementById('upload-button');
-        const uploadPopover = document.getElementById('upload-popover');
-        const fileAttachmentContainer = document.getElementById('file-attachment-container');
-        const BACKEND_API_URL = 'https://tendermatefunctionapp.azurewebsites.net/api/TalkToTenderBot';
-        let conversation = [];
-        let selectedFile = null;
+    <!-- Prompt/input -->
+    <div id="prompt-container">
+      <form id="chat-form">
+        <div id="file-attachment-container"></div>
 
-        // ----- SIGN OUT + USER CHIP -----
-        const signoutBtn = document.getElementById('signout');
-        const userInitialsEl = document.getElementById('user-initials');
-        const userShortnameEl = document.getElementById('user-shortname');
+        <div id="input-row">
+          <!-- Upload (blijft altijd zichtbaar) -->
+          <div id="upload-wrapper">
+            <button type="button" id="upload-button" aria-label="Bestand uploaden">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" fill="none" stroke="currentColor">
+                <line x1="11" y1="5" x2="11" y2="17"/><line x1="5" y1="11" x2="17" y2="11"/>
+              </svg>
+            </button>
+            <div id="upload-popover">
+              <label for="file-input" class="popover-item">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.122 2.122l7.81-7.81"/></svg>
+                <span>Bestand uploaden</span>
+              </label>
+            </div>
+          </div>
 
-        async function loadUser() {
-            try {
-                const res = await fetch('/.auth/me', { credentials: 'include' });
-                if (!res.ok) throw new Error('auth fetch failed');
-                const data = await res.json();
-                const p = data?.clientPrincipal;
-                const name = p?.userDetails || '';
-                const email = p?.userId || '';
-                const initials = (name || email || 'TM')
-                    .split(/[ .@_-]/).filter(Boolean).slice(0,2).map(s=>s[0].toUpperCase()).join('') || 'TM';
-                userInitialsEl.textContent = initials;
-                userShortnameEl.textContent = name || email || 'Gebruiker';
-            } catch {
-                userInitialsEl.textContent = 'TM';
-                userShortnameEl.textContent = 'Gebruiker';
-            }
-        }
-        loadUser();
+          <textarea id="message-input" placeholder="Stel een vraag aan TenderMate..." rows="1"></textarea>
+          <button type="submit" id="send-button">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
+          </button>
+        </div>
 
-        signoutBtn.addEventListener('click', () => {
-            window.location.href = '/.auth/logout?post_logout_redirect_uri=/';
-        });
-        // ---------------------------------
+        <input type="file" id="file-input" name="document" accept=".pdf,.docx"/>
+      </form>
+    </div>
+  </div>
 
-        // Welkomstboodschap
-        function showWelcomeMessage() {
-            const welcomeText = `## Welkom bij TenderMate
+  <!-- Modal -->
+  <div class="modal-overlay" id="mode-modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <div id="modal-title">Modus starten</div>
+        <button class="btn ghost" id="modal-close" type="button">Sluiten</button>
+      </div>
+      <div class="modal-body" id="modal-body">
+        <!-- dynamisch gevuld -->
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" id="modal-cancel">Annuleren</button>
+        <button class="btn primary" type="button" id="modal-start">Start</button>
+      </div>
+    </div>
+  </div>
 
-TenderMate is uw AI-assistent voor aanbestedingen. U kunt mij op drie manieren inzetten:
+  <script>
+    // ====== Globals ======
+    const BACKEND_API_URL = 'https://tendermatefunctionapp.azurewebsites.net/api/TalkToTenderBot';
 
-### 1) Quickscan (analyse en samenvatting)
-- **Aanleveren:** plaats *alle* aanbestedingsstukken (leidraad, PvE/PvW, conceptovereenkomst, Nota’s van Inlichtingen, bijlagen) **als één map** in SharePoint bij de betreffende klant/case.
-- **In de chat:** vermeld de dossier-/mapnaam (en eventuele aandachtspunten).
-- **Resultaat:** compacte samenvatting, go/no-go-indicaties, risico’s/KO-eisen, ontbrekende stukken, planning en informatievragen.
+    const chatWindow  = document.getElementById('chat-window');
+    const chatForm    = document.getElementById('chat-form');
+    const messageInput= document.getElementById('message-input');
+    const sendButton  = document.getElementById('send-button');
 
-### 2) Opzet schrijven (conceptteksten)
-- **Vraag een concepttekst** voor een kwaliteitsvraag of plan van aanpak.
-- Geef relevante context mee (perceel/scope, beoordelingskader en weging, pagina-eisen, differentiatoren).
-- Ik lever een eerste versie met heldere structuur, argumentatie en toetsing aan de eisen.
+    const fileInput   = document.getElementById('file-input');
+    const uploadButton= document.getElementById('upload-button');
+    const uploadPopover=document.getElementById('upload-popover');
+    const fileAttachmentContainer=document.getElementById('file-attachment-container');
 
-### 3) Beoordelen & verbeteren (review)
-- **Plak uw tekst rechtstreeks in de chat** voor feedback.
-- Of lever een document aan met uw concepttekst, via de uploadknop.
-- Ik doe een inhouds- en kwaliteitstoets (eisen, consistentie, overtuigingskracht, lengte), licht verbeterpunten toe en geef desgewenst een herformuleerde versie terug.
+    const btnQuick    = document.getElementById('btn-quickscan');
+    const btnDraft    = document.getElementById('btn-draft');
+    const btnReview   = document.getElementById('btn-review');
+
+    // Modal
+    const modalOverlay= document.getElementById('mode-modal');
+    const modalTitle  = document.getElementById('modal-title');
+    const modalBody   = document.getElementById('modal-body');
+    const modalClose  = document.getElementById('modal-close');
+    const modalCancel = document.getElementById('modal-cancel');
+    const modalStart  = document.getElementById('modal-start');
+
+    let conversation = [];
+    let selectedFile = null;
+    let currentMode  = null; // "QUICKSCAN" | "DRAFT" | "REVIEW"
+
+    // ====== Auth chip ======
+    const userInitialsEl=document.getElementById('user-initials');
+    const userShortnameEl=document.getElementById('user-shortname');
+    const signoutBtn=document.getElementById('signout');
+
+    async function loadUser(){
+      try{
+        const res=await fetch('/.auth/me',{credentials:'include'});
+        if(!res.ok) throw new Error('auth fetch failed');
+        const data=await res.json();
+        const p=data?.clientPrincipal;
+        const name=p?.userDetails||'';
+        const email=p?.userId||'';
+        const initials=(name||email||'TM').split(/[ .@_-]/).filter(Boolean).slice(0,2).map(s=>s[0].toUpperCase()).join('')||'TM';
+        userInitialsEl.textContent=initials;
+        userShortnameEl.textContent=name||email||'Gebruiker';
+      }catch{
+        userInitialsEl.textContent='TM';
+        userShortnameEl.textContent='Gebruiker';
+      }
+    }
+    loadUser();
+    signoutBtn.addEventListener('click',()=>{window.location.href='/.auth/logout?post_logout_redirect_uri=/';});
+
+    // ====== Welcome ======
+    function showWelcomeMessage(){
+      const md=`## Welkom bij TenderMate
+
+TenderMate helpt je sneller en consistenter werken aan aanbestedingen. Je kunt **typen** in de chat of de **knoppen** boven de invoerbalk gebruiken om een modus te kiezen. Je kunt op elk moment wisselen en ook een **PDF/DOCX** uploaden via de plusknop.
 
 ---
 
-**Bestanden aanleveren**
-- Het uploaden van bestanden via de chat is **niet vereist**: werk bij voorkeur via **SharePoint** (één complete map per aanbesteding).  
-- Voor korte fragmenten kunt u tekst direct **plakken** in de chat of leveren via de uploadknop.
+### Wat kun je doen?
 
-**Voorbeelden om te starten**
-- “Maak een quickscan van het SharePoint-dossier **[mapnaam]**.”
-- “Schrijf een conceptantwoord op kwaliteitsvraag **[nummer/titel]** (max. 2 pagina’s).”
-- “Beoordeel en verbeter onderstaande tekst op overtuigingskracht en eisenconformiteit.”
+**1) Quickscan (analyse & samenvatting)**  
+Krijg in enkele minuten een compacte, gestructureerde samenvatting met **go/no-go-signalen**, **KO-eisen**, risico’s, ontbrekende stukken, planning en vragen.
+- **Aanleveren:** zet *alle* stukken (leidraad, PvE/PvW, conceptovereenkomst, NvI, bijlagen) als **één map** in SharePoint.
+- **Gebruik:** klik op **Quickscan** en vul dossiernaam + aandachtspunten in *(of typ: “Maak een quickscan van [mapnaam]…”)*
+- **Uploaden:** mag ook een enkel bestand (PDF/DOCX) zijn; voor grote dossiers is SharePoint handiger.
 
-Klaar om te beginnen? Vertel waarvoor u TenderMate nu wilt inzetten.`;
-            addMessage(welcomeText, 'bot-message');
+**2) Opzet schrijven (conceptteksten)**  
+Genereer een SMART, wervende **conceptopzet** die aansluit op gunningscriteria en paginalimieten.
+- **Gebruik:** klik op **Opzet schrijven** en geef het onderwerp + randvoorwaarden *(of typ: “Schrijf een opzet voor [onderwerp]…”)*
+- **Handig meegeven:** paginalimiet, beoordelingskader, accenten/differentiatoren.
+
+**3) Beoordelen & verbeteren (review)**  
+Laat een aangeleverde tekst **inhoudelijk en structureel** beoordelen en verbeteren op scorepotentieel.
+- **Gebruik:** klik op **Beoordelen** en kies de focus *(of typ: “Beoordeel en verbeter onderstaande tekst…”)*
+- **Aanleveren:** plak de tekst in de chat of upload een kort document.
+
+---
+
+### Zo werkt de modus-keuze
+
+- Klik op een knop (**Quickscan / Opzet / Beoordelen**) → er verschijnt een klein formulier om je vraag te **structureren**.  
+- Na **Start** wordt je vraag ingevuld in de chat (zodat je ziet wat er verstuurd wordt) en naar de juiste **modus** gestuurd.  
+- **Typen kan altijd.** Als je geen modus kiest, probeert TenderMate je intentie te herkennen (quickscan / opzet / review).  
+- Je kunt **elk moment wisselen** van modus; de chatgeschiedenis blijft zichtbaar.
+
+---
+
+### Bestanden aanleveren
+
+- Upload via de **plusknop** (PDF of DOCX) of werk bij voorkeur met **SharePoint-mappen** voor complete dossiers.  
+- **DOCX met labels/IRM?** Zet in Word: *Bestand → Info → Document beveiligen* → **Toegang beperken/sensitivity uit** → opnieuw opslaan als **.docx**.
+
+---
+
+### Voorbeelden om te starten
+
+- “**Maak een quickscan** van het SharePoint-dossier **[mapnaam]**. Aandachtspunten: KO-eisen en planning.”  
+- “**Schrijf een conceptopzet** voor **[kwaliteitsvraag/onderwerp]** (max. 2 pagina’s). Focus op KPI’s en adoptie.”  
+- “**Beoordeel en verbeter** onderstaande tekst op overtuigingskracht, **SMART-KPI’s** en paginalimiet.”
+
+Klaar? Kies een modus of typ je vraag hieronder. Veel succes!
+`;
+      addMessage(md,'bot-message');
+    }
+
+    // ====== Upload UI ======
+    uploadButton.addEventListener('click',(e)=>{
+      e.stopPropagation();
+      uploadPopover.style.display = uploadPopover.style.display==='block' ? 'none':'block';
+    });
+    window.addEventListener('click',()=>{
+      if(uploadPopover.style.display==='block') uploadPopover.style.display='none';
+    });
+    fileInput.addEventListener('change',()=>{
+      if(fileInput.files.length>0){
+        selectedFile=fileInput.files[0];
+        uploadPopover.style.display='none';
+        renderFilePill(selectedFile.name);
+      }
+    });
+    function renderFilePill(name){
+      fileAttachmentContainer.innerHTML='';
+      const pill=document.createElement('div');
+      pill.className='file-pill';
+      pill.innerHTML=`
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+        <span class="file-pill-name">${name}</span>
+        <span class="file-pill-remove">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </span>`;
+      fileAttachmentContainer.appendChild(pill);
+      pill.querySelector('.file-pill-remove').addEventListener('click',()=>{
+        pill.remove(); selectedFile=null; fileInput.value='';
+      });
+    }
+
+    // ====== Textarea UX ======
+    messageInput.addEventListener('input',()=>{
+      messageInput.style.height='auto';
+      messageInput.style.height=(messageInput.scrollHeight)+'px';
+      sendButton.classList.toggle('active', messageInput.value.trim()!=='');
+    });
+    messageInput.addEventListener('keydown',(e)=>{
+      if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); chatForm.requestSubmit(); }
+    });
+
+    // ====== Mode modal helpers ======
+    function openModeModal(mode){
+      currentMode = mode;
+      document.querySelectorAll('.mode-btn').forEach(b=>b.classList.toggle('active', b.dataset.mode===mode));
+      modalTitle.textContent =
+        mode==='QUICKSCAN' ? 'Quickscan starten' :
+        mode==='DRAFT'     ? 'Opzet schrijven starten' :
+                             'Review starten';
+
+      // inhoud
+      if(mode==='QUICKSCAN'){
+        modalBody.innerHTML = `
+          <label>Dossier-/mapnaam (SharePoint)
+            <input id="f-map" class="input" placeholder="Bijv. Gemeente X - CRM - 2025">
+          </label>
+          <label>Aandachtspunten (optioneel)
+            <textarea id="f-notes" class="textarea" placeholder="Bijv. KO-criteria, deadlines, bekende risico’s"></textarea>
+          </label>`;
+      }else if(mode==='DRAFT'){
+        modalBody.innerHTML = `
+          <label>Onderwerp of kwaliteitsvraag
+            <input id="f-topic" class="input" placeholder="Bijv. Plan van aanpak dienstverlening">
+          </label>
+          <label>Randvoorwaarden (optioneel)
+            <textarea id="f-notes" class="textarea" placeholder="Pagina-limiet, beoordelingskader, accenten"></textarea>
+          </label>`;
+      }else{
+        modalBody.innerHTML = `
+          <label>Korte omschrijving (optioneel)
+            <input id="f-topic" class="input" placeholder="Wat wil je verbeterd zien?">
+          </label>
+          <label Aandachtspunten>
+            <textarea id="f-notes" class="textarea" placeholder="Klemtoon op KPI’s, toon, eisen, lengte, etc."></textarea>
+          </label>`;
+      }
+
+      modalOverlay.style.display='flex';
+    }
+    function closeModeModal(){
+      modalOverlay.style.display='none';
+    }
+
+    btnQuick.addEventListener('click',()=>openModeModal('QUICKSCAN'));
+    btnDraft.addEventListener('click',()=>openModeModal('DRAFT'));
+    btnReview.addEventListener('click',()=>openModeModal('REVIEW'));
+
+    modalClose.addEventListener('click',closeModeModal);
+    modalCancel.addEventListener('click',closeModeModal);
+    modalOverlay.addEventListener('click',(e)=>{ if(e.target===modalOverlay) closeModeModal(); });
+
+    modalStart.addEventListener('click',()=>{
+      // bouw een nette user prompt en zet die in het tekstveld (zodat gebruiker het ook ziet)
+      let prompt='';
+      if(currentMode==='QUICKSCAN'){
+        const map = document.getElementById('f-map')?.value?.trim() || '';
+        const notes= document.getElementById('f-notes')?.value?.trim() || '';
+        prompt = `Maak een quickscan van het SharePoint-dossier "${map}".${notes?`\nAandachtspunten: ${notes}`:''}`;
+      }else if(currentMode==='DRAFT'){
+        const topic=document.getElementById('f-topic')?.value?.trim() || '';
+        const notes=document.getElementById('f-notes')?.value?.trim() || '';
+        prompt = `Schrijf een conceptopzet voor: "${topic}".${notes?`\nRandvoorwaarden: ${notes}`:''}`;
+      }else{
+        const topic=document.getElementById('f-topic')?.value?.trim() || '';
+        const notes=document.getElementById('f-notes')?.value?.trim() || '';
+        prompt = `Beoordeel en verbeter mijn tekst.${topic?` Focus: ${topic}.`:''}${notes?`\nAandachtspunten: ${notes}`:''}`;
+      }
+      messageInput.value = prompt;
+      messageInput.dispatchEvent(new Event('input')); // activeer send-knop styling
+      closeModeModal();
+      messageInput.focus();
+    });
+
+    // ====== Chat submit ======
+    chatForm.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      const userMessage = messageInput.value.trim();
+      if(!userMessage && !selectedFile) return;
+
+      if(userMessage) addMessage(userMessage,'user-message');
+
+      const modeToSend = currentMode || inferModeFromText(userMessage);
+
+      // reset input area visuals
+      messageInput.value=''; messageInput.style.height='auto'; sendButton.classList.remove('active');
+      fileAttachmentContainer.innerHTML='';
+
+      const typing = addMessage('TenderMate is aan het typen...','bot-message typing-indicator');
+
+      try{
+        let response;
+        if(!selectedFile){
+          const payload = {
+            question: userMessage || 'Analyseer het bijgevoegde document.',
+            conversation,
+            mode: modeToSend || ''
+          };
+          response = await fetch(BACKEND_API_URL,{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify(payload),
+            credentials:'include'
+          });
+        }else{
+          const formData = new FormData();
+          formData.append('question', userMessage || 'Analyseer het bijgevoegde document.');
+          formData.append('conversation', JSON.stringify(conversation));
+          formData.append('document', selectedFile);
+          formData.append('mode', modeToSend || '');
+          selectedFile = null;
+
+          response = await fetch(BACKEND_API_URL,{
+            method:'POST',
+            body:formData,
+            credentials:'include'
+          });
         }
 
-        // Popover logica
-        uploadButton.addEventListener('click', (e) => {
-            e.stopPropagation();
-            uploadPopover.style.display = uploadPopover.style.display === 'block' ? 'none' : 'block';
-        });
-        window.addEventListener('click', () => {
-            if (uploadPopover.style.display === 'block') {
-                uploadPopover.style.display = 'none';
-            }
-        });
+        document.querySelectorAll('.typing-indicator').forEach(el=>el.remove());
 
-        // File pill logica
-        fileInput.addEventListener('change', () => {
-            if (fileInput.files.length > 0) {
-                selectedFile = fileInput.files[0];
-                uploadPopover.style.display = 'none';
-                createFilePill(selectedFile.name);
-            }
-        });
-        function createFilePill(fileName) {
-            fileAttachmentContainer.innerHTML = '';
-            const pill = document.createElement('div');
-            pill.className = 'file-pill';
-            pill.innerHTML = `
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" /></svg>
-                <span class="file-pill-name">${fileName}</span>
-                <span class="file-pill-remove">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-                </span>
-            `;
-            fileAttachmentContainer.appendChild(pill);
-            pill.querySelector('.file-pill-remove').addEventListener('click', () => {
-                pill.remove();
-                selectedFile = null;
-                fileInput.value = '';
-            });
+        const text = await response.text();
+        if(!response.ok){
+          console.error('Backend error', response.status, text);
+          throw new Error(text || `status ${response.status}`);
         }
 
-        // Textarea & send knop logica
-        messageInput.addEventListener('input', () => {
-            messageInput.style.height = 'auto';
-            messageInput.style.height = (messageInput.scrollHeight) + 'px';
-            sendButton.classList.toggle('active', messageInput.value.trim() !== '');
-        });
-        messageInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                chatForm.requestSubmit();
-            }
-        });
+        let data; try{ data=JSON.parse(text);}catch{ data={chat_output:text}; }
+        addMessage(data.chat_output || text,'bot-message');
 
-        // Chat logica
-        chatForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const userMessage = messageInput.value.trim();
-            if (!userMessage && !selectedFile) return;
-            if (userMessage) addMessage(userMessage, 'user-message');
+        conversation.push({role:'user', content:userMessage});
+        conversation.push({role:'bot',  content:data.chat_output || text});
 
-            messageInput.value = '';
-            messageInput.style.height = 'auto';
-            sendButton.classList.remove('active');
-            fileAttachmentContainer.innerHTML = '';
+      }catch(err){
+        console.error('Fout:',err);
+        document.querySelectorAll('.typing-indicator').forEach(el=>el.remove());
+        addMessage(`Oeps, er is een fout opgetreden: ${err.message}`,'bot-message');
+      }
+    });
 
-            const typingIndicator = addMessage('TenderMate is aan het typen...', 'bot-message typing-indicator');
+    function inferModeFromText(t=''){
+      const s=t.toLowerCase();
+      if(s.includes('quickscan')||s.includes('samenvat')||s.includes('analyse')) return 'QUICKSCAN';
+      if(s.includes('beoordeel')||s.includes('verbeter')||s.includes('review')) return 'REVIEW';
+      return 'DRAFT';
+    }
 
-            try {
-                let response;
+    function addMessage(message,className){
+      const el=document.createElement('div');
+      el.className=className;
+      if(className.includes('bot-message')){
+        let m=message.trim();
+        const codeBlock=/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/;
+        const match=m.match(codeBlock); if(match) m=match[1];
+        el.innerHTML=marked.parse(m,{breaks:true});
+        el.querySelectorAll('pre > code').forEach(block=>hljs.highlightElement(block));
+      }else{
+        el.textContent=message;
+      }
+      chatWindow.appendChild(el);
+      chatWindow.scrollTop=chatWindow.scrollHeight;
+      return el;
+    }
 
-                if (!selectedFile) {
-                    // ✅ GEEN bestand → stuur JSON
-                    const payload = {
-                        question: userMessage || 'Analyseer het bijgevoegde document.',
-                        conversation: conversation
-                    };
-                    response = await fetch(BACKEND_API_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload),
-                        credentials: 'include'
-                    });
-                } else {
-                    // 📎 WÉL bestand → multipart
-                    const formData = new FormData();
-                    formData.append('question', userMessage || 'Analyseer het bijgevoegde document.');
-                    formData.append('conversation', JSON.stringify(conversation));
-                    formData.append('document', selectedFile);
-                    selectedFile = null;
-
-                    response = await fetch(BACKEND_API_URL, {
-                        method: 'POST',
-                        body: formData,
-                        credentials: 'include'
-                    });
-                }
-
-                document.querySelectorAll('.typing-indicator').forEach(el => el.remove());
-
-                const text = await response.text();
-                if (!response.ok) {
-                    console.error('Backend error', response.status, text);
-                    throw new Error(`Serverfout: ${text || `status ${response.status}`}`);
-                }
-
-                // Probeer JSON te parsen; zo niet, toon plain text
-                let data;
-                try { data = JSON.parse(text); } catch { data = { chat_output: text }; }
-
-                addMessage(data.chat_output || text, 'bot-message');
-                conversation.push({ role: 'user', content: userMessage });
-                conversation.push({ role: 'bot', content: data.chat_output || text });
-
-            } catch (error) {
-                console.error('Fout:', error);
-                document.querySelectorAll('.typing-indicator').forEach(el => el.remove());
-                addMessage(`Oeps, er is een fout opgetreden: ${error.message}`, 'bot-message');
-            }
-        });
-
-        function addMessage(message, className) {
-            const messageElement = document.createElement('div');
-            messageElement.className = className;
-            if (className.includes('bot-message')) {
-                let cleanMessage = message.trim();
-                const codeBlockRegex = /^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/;
-                const match = cleanMessage.match(codeBlockRegex);
-                if (match) cleanMessage = match[1];
-                messageElement.innerHTML = marked.parse(cleanMessage, { breaks: true });
-                messageElement.querySelectorAll('pre > code').forEach((block) => hljs.highlightElement(block));
-            } else {
-                messageElement.textContent = message;
-            }
-            chatWindow.appendChild(messageElement);
-            chatWindow.scrollTop = chatWindow.scrollHeight;
-            return messageElement;
-        }
-
-        document.addEventListener('DOMContentLoaded', showWelcomeMessage);
-    </script>
+    document.addEventListener('DOMContentLoaded', showWelcomeMessage);
+  </script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-# function_app.py — versie v11 (multipart + DOCX/PDF + duidelijke foutmeldingen)
+# function_app.py — versie v12 (multipart + DOCX/PDF + mode + auto-router)
 
 import azure.functions as func
 import logging
@@ -20,6 +20,8 @@ from requests_toolbelt.multipart.decoder import MultipartDecoder
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 # ---------------- Helpers ----------------
+
+ALLOWED_MODES = {"QUICKSCAN", "REVIEW", "DRAFT"}
 
 def format_history_for_prompt_flow(conversation):
     """
@@ -84,6 +86,61 @@ def _read_docx_text(file_bytes: bytes) -> str:
     d = docx.Document(io.BytesIO(file_bytes))
     return "\n".join([p.text for p in d.paragraphs])
 
+
+def _normalize_mode(value: str | None) -> str | None:
+    if not value:
+        return None
+    v = value.strip().upper()
+    # een paar synoniemen die uit de UI of typend kunnen komen
+    synonyms = {
+        "QUICK", "SCAN", "QUICK-SCAN", "QUICKSCAN",
+        "REVIEW", "BEOORDELEN", "BEOORDELING", "FEEDBACK",
+        "DRAFT", "OPZET", "SCHRIJVEN", "WRITE"
+    }
+    if v in ALLOWED_MODES:
+        return v
+    if v in {"QUICK", "SCAN", "QUICK-SCAN"}:
+        return "QUICKSCAN"
+    if v in {"BEOORDELEN", "BEOORDELING", "FEEDBACK"}:
+        return "REVIEW"
+    if v in {"OPZET", "SCHRIJVEN", "WRITE"}:
+        return "DRAFT"
+    # soms sturen we "TMMODE:REVIEW" etc. mee — haal uit patroon
+    m = re.search(r"TMMODE\s*:\s*([A-Z_-]+)", v)
+    if m:
+        return _normalize_mode(m.group(1))
+    return None
+
+
+def _infer_mode_from_text(question: str) -> str:
+    """
+    Heel simpele heuristiek wanneer 'mode' niet expliciet is meegestuurd.
+    """
+    q = (question or "").lower()
+
+    quick_keywords = [
+        "quickscan", "quick scan", "go/no-go", "go nogo", "go no go",
+        "samenvatting", "analyseer", "analyse", "kwalificatie"
+    ]
+    review_keywords = [
+        "beoordeel", "beoordelen", "review", "feedback", "verbeter", "herschrijf",
+        "audit", "kwaliteitscheck", "kwaliteitscontrole"
+    ]
+    draft_keywords = [
+        "opzet", "concept", "schrijf", "uitwerken", "plan van aanpak",
+        "concepttekst", "maak een antwoord", "draft"
+    ]
+
+    if any(k in q for k in review_keywords):
+        return "REVIEW"
+    if any(k in q for k in quick_keywords):
+        return "QUICKSCAN"
+    if any(k in q for k in draft_keywords):
+        return "DRAFT"
+
+    # default: opzet
+    return "DRAFT"
+
 # -------------- Eind helpers --------------
 
 
@@ -92,7 +149,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
         # Healthcheck
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot v11", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot v12", status_code=200, mimetype="text/plain")
 
         # Intake logging (hulp bij diagnose)
         try:
@@ -117,6 +174,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
         question = ""
         conversation = []
         document_text = ""
+        mode = None   # NEW
 
         content_type = (req.headers.get("Content-Type") or "").lower()
 
@@ -158,10 +216,13 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             except Exception:
                 conversation = []
 
+            # NEW: mode uit formveld (we ondersteunen 'mode' en 'tm_mode')
+            mode = _normalize_mode(text_fields.get("mode") or text_fields.get("tm_mode"))
+
             has_file = file_part is not None
             logging.info(
                 f"parsed(multipart): question_len={len(question)}, has_file={has_file}, conv_items={len(conversation)}, "
-                f"file_ct={file_mt}, file_name={file_name}"
+                f"file_ct={file_mt}, file_name={file_name}, mode={mode}"
             )
 
             if has_file:
@@ -217,9 +278,10 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             question = (body.get("question") or body.get("chat_input") or "").strip()
             conversation = body.get("conversation", []) or []
             document_text = body.get("document_text", "") or ""
+            mode = _normalize_mode(body.get("mode") or body.get("tm_mode"))  # NEW
 
             logging.info(
-                f"parsed(json): question_len={len(question)}, has_doc_text={bool(document_text)}, conv_items={len(conversation)}"
+                f"parsed(json): question_len={len(question)}, has_doc_text={bool(document_text)}, conv_items={len(conversation)}, mode={mode}"
             )
         else:
             return func.HttpResponse(
@@ -227,11 +289,17 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                 status_code=415, mimetype="text/plain"
             )
 
+        # --- Mode fallback (auto-router) ---
+        if not mode:
+            mode = _infer_mode_from_text(question)
+            logging.info(f"auto-inferred mode: {mode}")
+
         # ---- Payload naar Prompt Flow ----
         payload = {
-            "chat_input":  question or "Analyseer het bijgevoegde document.",
+            "chat_input":   question or "Analyseer het bijgevoegde document.",
             "chat_history": format_history_for_prompt_flow(conversation),
             "document_text": document_text or "",
+            "mode": mode,  # NEW: naar jouw enkele Jinja-prompt
         }
         headers = {
             "Authorization": f"Bearer {prompt_flow_api_key}",
