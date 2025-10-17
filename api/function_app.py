@@ -340,17 +340,33 @@ Genereer een voorstelindeling + compacte conceptinhoud die exact aansluit op gun
 # ---------------- Chat call ----------------
 
 def call_chat(system_text: str, user_text: str) -> str:
+    """
+    Roept Azure OpenAI Chat aan.
+    Let op: voor (nieuwere) modellen is 'max_completion_tokens' vereist i.p.v. 'max_tokens'.
+    """
     client = get_aoai_client()
-    resp = client.chat.completions.create(
-        model=AOAI_CHAT_DEPLOYMENT,
-        messages=[
-            {"role": "system", "content": system_text},
-            {"role": "user",   "content": user_text},
-        ],
-        temperature=0.3,
-        max_tokens=1800,
-    )
-    msg = resp.choices[0].message.content if resp.choices else ""
+    try:
+        resp = client.chat.completions.create(
+            model=AOAI_CHAT_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user",   "content": user_text},
+            ],
+            temperature=0.3,
+            max_completion_tokens=6000,  # <-- gebruik dit veld (niet max_tokens)
+        )
+    except TypeError:
+        # fallback voor oudere SDK’s/modellen die nog max_tokens verwachten
+        resp = client.chat.completions.create(
+            model=AOAI_CHAT_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user",   "content": user_text},
+            ],
+            temperature=0.3,
+            max_tokens=6000,
+        )
+    msg = resp.choices[0].message.content if getattr(resp, "choices", None) else ""
     return msg or ""
 
 # ---------------- HTTP Function ----------------
