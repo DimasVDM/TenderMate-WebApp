@@ -2,8 +2,9 @@
 # The Python Worker is managed by Azure Functions platform
 # Manually managing azure-functions-worker may cause unexpected issues
 
-azure-functions
-pypdf==4.2.0
-python-docx==1.1.2
-requests==2.32.3
-requests-toolbelt==1.0.0
+azure-search-documents==11.6.0b2
+azure-core>=1.30.0
+openai>=1.35.7
+requests-toolbelt
+pypdf
+python-docx

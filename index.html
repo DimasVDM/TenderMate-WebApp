@@ -490,7 +490,7 @@ Klaar? Kies een modus of typ je vraag hieronder. Veel succes!
           <label>Korte omschrijving (optioneel)
             <input id="f-topic" class="input" placeholder="Wat wil je verbeterd zien?">
           </label>
-          <label Aandachtspunten>
+          <label>Aandachtspunten 
             <textarea id="f-notes" class="textarea" placeholder="Klemtoon op KPI’s, toon, eisen, lengte, etc."></textarea>
           </label>`;
       }
@@ -589,6 +589,9 @@ Klaar? Kies een modus of typ je vraag hieronder. Veel succes!
 
         conversation.push({role:'user', content:userMessage});
         conversation.push({role:'bot',  content:data.chat_output || text});
+
+        currentMode = null;
+        document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
 
       }catch(err){
         console.error('Fout:',err);

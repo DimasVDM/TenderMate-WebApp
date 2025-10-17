@@ -1,31 +1,90 @@
-# function_app.py — versie v12 (multipart + DOCX/PDF + mode + auto-router)
+# function_app.py — Serverless PF-vervanger (hybride search + AOAI chat), vA.1
+# - Ondersteunt PDF/DOCX uploads
+# - Hybride search tegen indexvelden: chunk/title/text_vector
+# - Semantic config: sharepoint-vectorizer-semantic-configuration
+# - Modes: QUICKSCAN / DRAFT / REVIEW (met fallback op vraag)
 
 import azure.functions as func
 import logging
 import os
-import requests
 import json
 import io
-import traceback
-import zipfile
-import binascii
 import re
+import zipfile
+import traceback
+import binascii
+from typing import List, Dict, Any
 
+# ---- Bestandslezers ----
 from pypdf import PdfReader
-from requests.exceptions import ReadTimeout
 import docx
 from docx.opc.exceptions import PackageNotFoundError
+
+# ---- Multipart decoder ----
 from requests_toolbelt.multipart.decoder import MultipartDecoder
+
+# ---- Azure Search ----
+from azure.search.documents import SearchClient
+from azure.core.credentials import AzureKeyCredential
+from azure.search.documents.models import VectorizedQuery, QueryType
+
+# ---- Azure OpenAI (chat + embeddings) ----
+from openai import AzureOpenAI
+
+# ------------------ ENV / Config ------------------
+
+AZURE_SEARCH_ENDPOINT = os.environ.get("AZURE_SEARCH_ENDPOINT", "").rstrip("/")
+AZURE_SEARCH_API_KEY = os.environ.get("AZURE_SEARCH_API_KEY", "")
+AZURE_SEARCH_INDEX   = os.environ.get("AZURE_SEARCH_INDEX", "sharepoint-vectorizer-direct")
+
+# Vector veld & semantic config zoals in jouw index
+TEXT_VECTOR_FIELD = "text_vector"
+SEMANTIC_CONFIG   = "sharepoint-vectorizer-semantic-configuration"
+TOP_K             = int(os.environ.get("TOP_K", "12"))
+
+# Azure OpenAI
+AOAI_ENDPOINT          = os.environ.get("AOAI_ENDPOINT", "").rstrip("/")
+AOAI_API_KEY           = os.environ.get("AOAI_API_KEY", "")
+AOAI_CHAT_DEPLOYMENT   = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5")  # pas aan naar jouw deploymentnaam
+AOAI_EMBED_DEPLOYMENT  = os.environ.get("AOAI_EMBED_DEPLOYMENT", "text-embedding-3-large")  # 3072-dim
+
+# ---------------------------------------------------
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
-# ---------------- Helpers ----------------
+# Lazy clients
+_search_client = None
+_aoai_client   = None
 
-ALLOWED_MODES = {"QUICKSCAN", "REVIEW", "DRAFT"}
+def get_search_client() -> SearchClient:
+    global _search_client
+    if _search_client is None:
+        if not AZURE_SEARCH_ENDPOINT or not AZURE_SEARCH_API_KEY:
+            raise RuntimeError("AZURE_SEARCH_ENDPOINT/API_KEY ontbreken.")
+        _search_client = SearchClient(
+            endpoint=AZURE_SEARCH_ENDPOINT,
+            index_name=AZURE_SEARCH_INDEX,
+            credential=AzureKeyCredential(AZURE_SEARCH_API_KEY),
+        )
+    return _search_client
 
-def format_history_for_prompt_flow(conversation):
+def get_aoai_client() -> AzureOpenAI:
+    global _aoai_client
+    if _aoai_client is None:
+        if not AOAI_ENDPOINT or not AOAI_API_KEY:
+            raise RuntimeError("AOAI_ENDPOINT/API_KEY ontbreken.")
+        _aoai_client = AzureOpenAI(
+            api_key=AOAI_API_KEY,
+            api_version="2024-02-15-preview",
+            azure_endpoint=AOAI_ENDPOINT
+        )
+    return _aoai_client
+
+# ---------------- Helpers: conversation & parsing ----------------
+
+def format_history_for_prompt_flow(conversation: List[Dict[str, str]]) -> List[Dict[str, Dict[str, str]]]:
     """
-    Zet [{role, content}, ...] om naar Prompt Flow chat_history.
+    Conversatie in PF-achtig formaat (zodat we bestaande formatting kunnen hergebruiken).
     """
     chat_history = []
     for i in range(0, len(conversation), 2):
@@ -44,149 +103,286 @@ def format_history_for_prompt_flow(conversation):
             )
     return chat_history
 
-
-def extract_chat_output_from_json(pf_data: dict) -> str:
-    """
-    Probeer een bruikbaar antwoordveld uit de PF JSON te halen.
-    """
-    if pf_data is None:
-        return ""
-    for key in ("chat_output", "output", "result", "answer", "content"):
-        val = pf_data.get(key)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-    # eenvoudige fallback: niets gevonden
-    return ""
-
-
 def _hex_prefix(b: bytes, n: int = 16) -> str:
     return binascii.hexlify(b[:n]).decode().upper()
 
-
 def _is_probably_docx(file_bytes: bytes) -> bool:
-    # DOCX is een ZIP-container
     return zipfile.is_zipfile(io.BytesIO(file_bytes))
-
 
 def _read_pdf_text(file_bytes: bytes) -> str:
     reader = PdfReader(io.BytesIO(file_bytes))
-    pages = []
+    chunks = []
     for p in reader.pages:
-        pages.append(p.extract_text() or "")
-    return "\n".join(pages)
-
+        chunks.append(p.extract_text() or "")
+    return "\n".join(chunks)
 
 def _read_docx_text(file_bytes: bytes) -> str:
-    """
-    Lees tekst uit een DOCX. Gooit BadZipFile/PackageNotFoundError door bij corrupte/niet-DOCX bestanden.
-    """
     if not _is_probably_docx(file_bytes):
         sig = _hex_prefix(file_bytes, 8)
         raise zipfile.BadZipFile(f"Not a DOCX/ZIP (magic={sig})")
     d = docx.Document(io.BytesIO(file_bytes))
     return "\n".join([p.text for p in d.paragraphs])
 
+# ---------------- Embeddings & Search ----------------
 
-def _normalize_mode(value: str | None) -> str | None:
-    if not value:
-        return None
-    v = value.strip().upper()
-    # een paar synoniemen die uit de UI of typend kunnen komen
-    synonyms = {
-        "QUICK", "SCAN", "QUICK-SCAN", "QUICKSCAN",
-        "REVIEW", "BEOORDELEN", "BEOORDELING", "FEEDBACK",
-        "DRAFT", "OPZET", "SCHRIJVEN", "WRITE"
-    }
-    if v in ALLOWED_MODES:
-        return v
-    if v in {"QUICK", "SCAN", "QUICK-SCAN"}:
-        return "QUICKSCAN"
-    if v in {"BEOORDELEN", "BEOORDELING", "FEEDBACK"}:
-        return "REVIEW"
-    if v in {"OPZET", "SCHRIJVEN", "WRITE"}:
-        return "DRAFT"
-    # soms sturen we "TMMODE:REVIEW" etc. mee — haal uit patroon
-    m = re.search(r"TMMODE\s*:\s*([A-Z_-]+)", v)
-    if m:
-        return _normalize_mode(m.group(1))
-    return None
+def embed_text(text: str) -> List[float]:
+    client = get_aoai_client()
+    resp = client.embeddings.create(
+        model=AOAI_EMBED_DEPLOYMENT,
+        input=text
+    )
+    return resp.data[0].embedding
 
-
-def _infer_mode_from_text(question: str) -> str:
+def hybrid_search(query_text: str, top_k: int = TOP_K) -> List[Dict[str, Any]]:
     """
-    Heel simpele heuristiek wanneer 'mode' niet expliciet is meegestuurd.
+    Hybride search: keyword + vector (client-side embeddings), semantic rerank.
+    Veldmapping: content=chunk, source=title, vector=text_vector
     """
-    q = (question or "").lower()
+    sc = get_search_client()
+    vec = embed_text(query_text)
+    vq = VectorizedQuery(vector=vec, k_nearest_neighbors=top_k, fields=TEXT_VECTOR_FIELD)
 
-    quick_keywords = [
-        "quickscan", "quick scan", "go/no-go", "go nogo", "go no go",
-        "samenvatting", "analyseer", "analyse", "kwalificatie"
-    ]
-    review_keywords = [
-        "beoordeel", "beoordelen", "review", "feedback", "verbeter", "herschrijf",
-        "audit", "kwaliteitscheck", "kwaliteitscontrole"
-    ]
-    draft_keywords = [
-        "opzet", "concept", "schrijf", "uitwerken", "plan van aanpak",
-        "concepttekst", "maak een antwoord", "draft"
-    ]
+    results = sc.search(
+        search_text=query_text,
+        vector_queries=[vq],
+        top=top_k,
+        query_type=QueryType.SEMANTIC,
+        semantic_configuration_name=SEMANTIC_CONFIG
+    )
 
-    if any(k in q for k in review_keywords):
-        return "REVIEW"
-    if any(k in q for k in quick_keywords):
+    items = []
+    for r in results:
+        # r is a SearchResult; dict-like access
+        items.append({
+            "content":   r.get("chunk", "") or "",
+            "source":    r.get("title", "") or "",
+            "parent_id": r.get("parent_id", "") or ""
+        })
+    return items
+
+def build_context(docs: List[Dict[str, Any]]) -> str:
+    """
+    Bouw RAG-context: Content + Source (titel) + parent_id (optioneel).
+    """
+    blocks = []
+    for d in docs:
+        src = d.get("source") or ""
+        pid = d.get("parent_id") or ""
+        label = src if not pid else f"{src} (parent: {pid})"
+        blocks.append(f"Content:\n{d.get('content','')}\nSource: {label}")
+    return "\n\n".join(blocks)
+
+# ---------------- Prompt rendering ----------------
+
+def detect_mode(explicit_mode: str, chat_input: str) -> str:
+    """
+    Neem expliciete mode over; anders heuristisch uit vraag.
+    """
+    m = (explicit_mode or "").strip().upper()
+    if m in ("QUICKSCAN", "REVIEW", "DRAFT"):
+        return m
+    txt = (chat_input or "").lower()
+    if "quickscan" in txt or "go/no-go" in txt or "go no go" in txt:
         return "QUICKSCAN"
-    if any(k in q for k in draft_keywords):
-        return "DRAFT"
-
-    # default: opzet
+    if "review" in txt or "beoordeel" in txt or "verbeter" in txt:
+        return "REVIEW"
     return "DRAFT"
 
-# -------------- Eind helpers --------------
+def render_system_and_user(mode: str, document_text: str, context_text: str, chat_history_pf: List[Dict[str, Any]], chat_input: str):
+    """
+    Render system+user rollen voor Chat API op basis van gevraagde mode.
+    Prompts zijn de (samengebalde) varianten die je hiervoor gebruikte.
+    """
+    # Chat history in plain tekst (zoals je PF deed)
+    hist_lines = []
+    for item in chat_history_pf:
+        hist_lines.append("user:\n" + (item["inputs"].get("chat_input") or ""))
+        hist_lines.append("assistant:\n" + (item["outputs"].get("chat_output") or ""))
+    history_block = "\n".join(hist_lines)
 
+    # Gemeenschappelijk blok
+    common_suffix = f"""
+context: {context_text}
+
+chat history:
+{history_block}
+
+user:
+{chat_input}
+""".strip()
+
+    document_line = f"document_text: {document_text or ''}"
+
+    if mode == "QUICKSCAN":
+        system = (
+            "Je bent TenderMate, de elite AI-tenderanalist en strategisch bid-adviseur van IT-Workz.\n\n"
+            "Jouw taak: analyseer het volledige aanbestedingsdocument (document_text) en plaats dit altijd in de context "
+            "van de meest relevante voorbeelden uit de IT-Workz kennisbank (context), zoals de Producten- en Diensten Catalogus, "
+            "eerdere aanbestedingen en referentie-documenten."
+        )
+        user = f"""
+{document_line}
+
+Maak een strategische quickscan (kwalificatie / go-no-go) op basis van de CONTEXT. Gebruik deze koppen exact in deze volgorde en schrijf in proza, compact maar volledig. Gebruik visuele indicatoren (✅/❌ en 🟢/🔴) waar aangegeven. Waar informatie ontbreekt: “Niet gespecificeerd in stukken.”
+Belangrijk: geef de koppen duidelijk in bold weer (grotere letter/duidelijke typografie) en onderscheid ze visueel van de inhoud.
+
+## Kerngegevens aanbesteding
+- **Naam aanbesteding / opdrachtgever**: [naam | Niet gespecificeerd in stukken]
+- **Soort aanbesteding / procedure**: [type | Niet gespecificeerd in stukken]
+- **Inkoopadviseur / contact**: [naam/organisatie | Niet gespecificeerd in stukken]
+- **Vragen stellen – manier & kanaal**: [wijze | Niet gespecificeerd in stukken]
+- **Aantal vragenronden**: [aantal | Niet gespecificeerd in stukken]
+
+## Organisatieprofiel (onderwijs)
+- **Soort organisatie / onderwijssoort**: [type | Niet gespecificeerd in stukken]
+- **Aantal scholen/locaties**: [aantal | Niet gespecificeerd in stukken]
+- **Aantal medewerkers**: [aantal | Niet gespecificeerd in stukken]
+- **Aantal leerlingen/studenten**: [aantal | Niet gespecificeerd in stukken]
+
+## Aanleiding en doel
+- Duid kort het “waarom” van de uitvraag.
+
+## Essentie van de uitvraag (scope)
+- Scope/omvang, kernbegrippen; koppel aan CONTEXT.
+
+## Contract & budget
+- **Looptijd** (basis + opties); **Contractwaarde / richtprijs / prijsplafond**; bijzonderheden.
+
+## KO-criteria en voorwaarden
+- Uitsluitingsgronden / geschiktheidseisen (technisch / beroeps), normeringen/certificeringen (ISO/ISAE/NEN/ENSIA), juridische kaders (ARBIT/ARVODI/GIBIT, AVG).
+- Match met IT-Workz Catalogus + haalbaarheidsconclusie.
+
+## Gunningscriteria
+- Overzicht + weging (indien beschikbaar) en scorefocus.
+
+## Programma van Eisen/Wensen (samengevat)
+- Cluster per thema (projectorganisatie, techniek/architectuur, privacy/AVG, beheer/SLA, adoptie/training, planning/migratie).
+
+## Analyse van Vereiste Disciplines
+- **Uitvoering** (rollen/skills) + **Bid-team** (rollen voor inschrijving).
+
+## Weging, paginabudget en planning
+- Wegingspercentages, paginabudget/verdeling, planning & deadlines.
+
+## Budget en concurrentiepositie
+- Signalen budget, concurrenten (indien af te leiden) + sterke/zwakke punten.
+
+## Showstoppers / risico’s (en mitigatie)
+- Lijst + mitigaties of verhelderingsvragen.
+
+## Referenties (advies)
+- 2–3 typen referenties + waarom ze passen.
+
+## In te dienen bewijsstukken
+- Gevraagde stukken (UEA, KvK, ISO/ISAE, verzekeringen, referenties, DPA, prijsbiljet, etc.) + vergelijking met IT-Workz standaardset en status.
+
+## Standaard- en verdiepingsvragen
+- Standaard en strategische vragen (incl. vragenprocedure).
+
+## Actiechecklist (intern)
+- Concrete to-do’s (taak; eigenaar; datum).
+
+## Go/No-Go indicatie (conclusie)
+- Samenvattend advies o.b.v. showstoppers, concurrentie, match portfolio, risico’s, beschikbaarheid bewijs/competenties.
+""".strip() + "\n\n" + common_suffix
+
+    elif mode == "REVIEW":
+        system = (
+            "Je bent TenderMate, AI-kwaliteitsauditor en kritische kwaliteitsmanager voor aanbestedingen van IT-Workz.\n\n"
+            "Evalueer en verbeter een aangeleverde tekst (document_text) op volledigheid, relevantie en scoringspotentieel."
+        )
+        user = f"""
+{document_line}
+
+OPDRACHT
+Beoordeel en verbeter een (impliciet) aangeleverd stuk t.o.v. gunningscriteria en beoordelingskader. Schrijf in proza; gebruik bullets alleen bij checklists/KPI’s. Noteer hiaten als “Niet gespecificeerd in stukken.” Volg deze koppen exact:
+
+## Korte overall beoordeling
+## Fit met gunningskader en eisen
+## KO/voorwaarden en juridische punten
+## SMART & KPI’s
+## Stijl en toon (onderwijs)
+## Paginabudget & structuur
+## Boven verwachting scoren
+## Herschrijfsuggesties (show, don’t tell)
+## Referenties en bewijs
+## Actiechecklist (intern)
+""".strip() + "\n\n" + common_suffix
+
+    else:  # DRAFT
+        system = (
+            "Je bent TenderMate, AI-tekstarchitect voor aanbestedingen van IT-Workz.\n\n"
+            "Schrijf een SMART, wervend en praktisch conceptantwoord op een gunningscriterium. "
+            "Gebruik relevante voorbeelden uit de kennisbank (context) en het aangeleverde document (document_text)."
+        )
+        user = f"""
+{document_line}
+
+OPDRACHT
+Genereer een voorstelindeling + compacte conceptinhoud die exact aansluit op gunningscriteria en beoordelingskader. Gebruik deze koppen exact in deze volgorde. Schrijf in proza; bullets alleen bij checklists/KPI’s. Markeer gaten als “Niet gespecificeerd in stukken.”
+
+## Inleiding
+## Structuur conform gunningskader
+## Onze aanpak in hoofdlijnen
+## Uitwerking per thema/onderdeel
+## Rollen en beschikbaarheid
+## KPI’s en bewaking (SMART)
+## Planning en mijlpalen
+## Risico’s en beheersmaatregelen
+## Referenties en bewijs
+## Paginabudget en scorefocus
+## Verhelderingsvragen richting aanbestedende dienst
+## Gebruikte bronnen (compact)
+""".strip() + "\n\n" + common_suffix
+
+    return system, user
+
+# ---------------- Chat call ----------------
+
+def call_chat(system_text: str, user_text: str) -> str:
+    client = get_aoai_client()
+    resp = client.chat.completions.create(
+        model=AOAI_CHAT_DEPLOYMENT,
+        messages=[
+            {"role": "system", "content": system_text},
+            {"role": "user",   "content": user_text},
+        ],
+        temperature=0.3,
+        max_tokens=1800,
+    )
+    msg = resp.choices[0].message.content if resp.choices else ""
+    return msg or ""
+
+# ---------------- HTTP Function ----------------
 
 @app.route(route="TalkToTenderBot")
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
-        # Healthcheck
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot v12", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot (serverless PF)", status_code=200, mimetype="text/plain")
 
-        # Intake logging (hulp bij diagnose)
+        # Logging intake
         try:
             ct = (req.headers.get("Content-Type") or "").lower()
             cl = req.headers.get("Content-Length") or "?"
-            cookie_present = bool(req.headers.get("Cookie"))
-            raw_body = req.get_body() or b""
-            logging.info(
-                f"req.method={req.method}, ct={ct}, len={cl}, raw_len={len(raw_body)}, cookie_present={cookie_present}"
-            )
-        except Exception as le:
-            logging.warning(f"intake-log failed: {le}")
+            raw_len = len(req.get_body() or b"")
+            logging.info(f"req.method={req.method}, ct={ct}, len={cl}, raw_len={raw_len}")
+        except Exception:
+            pass
 
-        # Config van Prompt Flow
-        prompt_flow_url = os.environ.get("PROMPT_FLOW_URL")
-        prompt_flow_api_key = os.environ.get("PROMPT_FLOW_API_KEY")
-        logging.info(f"PFlow URL present={bool(prompt_flow_url)}, key present={bool(prompt_flow_api_key)}")
-        if not prompt_flow_url or not prompt_flow_api_key:
-            return func.HttpResponse("Server configuration error (PF URL/key missing).", status_code=500, mimetype="text/plain")
-
-        # Invoer (JSON of multipart)
+        # ---- Parse input (JSON of multipart) ----
         question = ""
         conversation = []
         document_text = ""
-        mode = None   # NEW
+        mode = ""
 
         content_type = (req.headers.get("Content-Type") or "").lower()
 
         if "multipart/form-data" in content_type:
-            logging.info("parse-path=multipart")
             body_bytes = req.get_body() or b""
-
-            # Parse multipart met requests-toolbelt (pakt boundary zelf uit de header)
             try:
-                decoder = MultipartDecoder(body_bytes, content_type)
-            except Exception as e:
-                logging.exception("Multipart decode error")
+                dec = MultipartDecoder(body_bytes, content_type)
+            except Exception:
                 return func.HttpResponse("Ongeldig multipart-verzoek (decode fout).", status_code=400, mimetype="text/plain")
 
             text_fields = {}
@@ -194,14 +390,13 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             file_mt = ""
             file_name = ""
 
-            for p in decoder.parts:
+            for p in dec.parts:
                 cd = p.headers.get(b'Content-Disposition', b'').decode(errors="ignore")
                 ctype = p.headers.get(b'Content-Type', b'').decode(errors="ignore").lower()
 
                 if 'filename=' in cd:
                     file_part = p
                     file_mt = ctype or "application/octet-stream"
-                    # bestandsnaam uit Content-Disposition
                     m = re.search(r'filename\*?="?([^";]+)"?', cd, flags=re.IGNORECASE)
                     file_name = (m.group(1) if m else "").strip()
                 else:
@@ -210,60 +405,35 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                         text_fields[m.group(1)] = p.text
 
             question = (text_fields.get("question") or "").strip()
-            conv_json = text_fields.get("conversation") or "[]"
+            mode = (text_fields.get("mode") or "").strip()
             try:
-                conversation = json.loads(conv_json) if conv_json else []
+                conversation = json.loads(text_fields.get("conversation") or "[]")
             except Exception:
                 conversation = []
 
-            # NEW: mode uit formveld (we ondersteunen 'mode' en 'tm_mode')
-            mode = _normalize_mode(text_fields.get("mode") or text_fields.get("tm_mode"))
-
-            has_file = file_part is not None
-            logging.info(
-                f"parsed(multipart): question_len={len(question)}, has_file={has_file}, conv_items={len(conversation)}, "
-                f"file_ct={file_mt}, file_name={file_name}, mode={mode}"
-            )
-
-            if has_file:
-                ext = (os.path.splitext(file_name or "")[1] or "").lower()
+            # Bestandsverwerking
+            if file_part is not None:
                 file_bytes = file_part.content or b""
-
+                ext = (os.path.splitext(file_name or "")[1] or "").lower()
                 try:
                     if ("pdf" in file_mt) or (ext == ".pdf"):
                         document_text = _read_pdf_text(file_bytes)
                     elif ("wordprocessingml" in file_mt) or (ext == ".docx") or (file_mt == "application/octet-stream" and ext == ".docx"):
                         document_text = _read_docx_text(file_bytes)
                     else:
-                        logging.warning(f"Unsupported upload type: ctype={file_mt}, ext={ext}, name={file_name}")
-                        return func.HttpResponse(
-                            "Bestandstype niet ondersteund. Upload een PDF of DOCX.",
-                            status_code=415, mimetype="text/plain"
-                        )
-
+                        return func.HttpResponse("Bestandstype niet ondersteund. Upload een PDF of DOCX.", status_code=415, mimetype="text/plain")
                 except zipfile.BadZipFile as e:
                     sig = _hex_prefix(file_bytes)
-                    logging.exception(f"DOCX BadZipFile: {e} ctype={file_mt} ext={ext} name={file_name} sig={sig}")
                     return func.HttpResponse(
                         f"Kon DOCX niet lezen: bestand lijkt geen geldig DOCX/ZIP (magic={sig}). "
-                        "Controleer of het geen .doc is, of dat IRM/wachtwoord-beveiliging is uitgezet.",
-                        status_code=422, mimetype="text/plain"
-                    )
-                except PackageNotFoundError as e:
-                    logging.exception(f"DOCX PackageNotFound: {e} ctype={file_mt} ext={ext} name={file_name}")
-                    return func.HttpResponse(
-                        "Kon DOCX niet openen (geen geldig Office-package). Sla opnieuw op als .docx en probeer opnieuw.",
-                        status_code=422, mimetype="text/plain"
-                    )
+                        "Controleer IRM/wachtwoord-beveiliging of sla opnieuw op als .docx.",
+                        status_code=422, mimetype="text/plain")
+                except PackageNotFoundError:
+                    return func.HttpResponse("Kon DOCX niet openen (geen geldig Office-package). Sla opnieuw op als .docx en probeer opnieuw.", status_code=422, mimetype="text/plain")
                 except Exception as e:
-                    logging.exception(f"Onbekende fout bij document lezen: {e} ctype={file_mt} ext={ext} name={file_name}")
-                    return func.HttpResponse(
-                        f"Fout bij lezen van document: {repr(e)}",
-                        status_code=422, mimetype="text/plain"
-                    )
+                    return func.HttpResponse(f"Fout bij lezen van document: {repr(e)}", status_code=422, mimetype="text/plain")
 
         elif "application/json" in content_type:
-            logging.info("parse-path=json")
             body = {}
             try:
                 body = req.get_json()
@@ -274,98 +444,58 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                         body = json.loads(raw.decode("utf-8", errors="ignore"))
                     except Exception:
                         body = {}
-
-            question = (body.get("question") or body.get("chat_input") or "").strip()
-            conversation = body.get("conversation", []) or []
+            question      = (body.get("question") or body.get("chat_input") or "").strip()
+            conversation  = body.get("conversation", []) or []
             document_text = body.get("document_text", "") or ""
-            mode = _normalize_mode(body.get("mode") or body.get("tm_mode"))  # NEW
-
-            logging.info(
-                f"parsed(json): question_len={len(question)}, has_doc_text={bool(document_text)}, conv_items={len(conversation)}, mode={mode}"
-            )
+            mode          = (body.get("mode") or "").strip()
         else:
             return func.HttpResponse(
                 f"Content-Type '{content_type}' niet ondersteund (verwacht JSON of multipart/form-data).",
                 status_code=415, mimetype="text/plain"
             )
 
-        # --- Mode fallback (auto-router) ---
-        if not mode:
-            mode = _infer_mode_from_text(question)
-            logging.info(f"auto-inferred mode: {mode}")
+        # ---- Mode bepalen ----
+        mode_final = detect_mode(mode, question)
 
-        # ---- Payload naar Prompt Flow ----
-        payload = {
-            "chat_input":   question or "Analyseer het bijgevoegde document.",
-            "chat_history": format_history_for_prompt_flow(conversation),
-            "document_text": document_text or "",
-            "mode": mode,  # NEW: naar jouw enkele Jinja-prompt
-        }
-        headers = {
-            "Authorization": f"Bearer {prompt_flow_api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-
-        # Aanroep PF met royale timeout
+        # ---- Zoek context in Azure AI Search ----
+        # Gebruik de vraag + (optioneel) een hint uit document_text voor betere RAG
+        search_query = question or (document_text[:300] if document_text else "aanbesteding onderwijs")
+        docs = []
         try:
-            resp = requests.post(
-                prompt_flow_url,
-                headers=headers,
-                json=payload,
-                timeout=(10, 210),  # 10s connect, 210s read
-            )
-        except ReadTimeout:
-            logging.error("PF ReadTimeout")
-            return func.HttpResponse("AI-dienst duurde te lang (timeout).", status_code=504, mimetype="text/plain")
-        except requests.exceptions.RequestException as e:
-            logging.exception(f"PF request error: {e}")
-            return func.HttpResponse(f"PF request error: {repr(e)}", status_code=502, mimetype="text/plain")
+            docs = hybrid_search(search_query, top_k=TOP_K)
+        except Exception as e:
+            logging.exception(f"Search error: {e}")
+            # We gaan door zonder RAG-context
+            docs = []
 
-        logging.info(f"PF status={resp.status_code}")
-        if not (200 <= resp.status_code < 300):
-            snippet = (resp.text or "")[:500]
-            logging.warning(f"PF non-2xx body snippet: {snippet}")
-            return func.HttpResponse(
-                f"AI-dienst error (status {resp.status_code}): {snippet}",
-                status_code=502, mimetype="text/plain"
-            )
+        context_text = build_context(docs)
 
-        # ---- PF response interpreteren ----
-        body_text = resp.text or ""
+        # ---- Chat history als PF-achtig blok ----
+        chat_history_pf = format_history_for_prompt_flow(conversation)
+
+        # ---- Render prompts ----
+        system_text, user_text = render_system_and_user(
+            mode=mode_final,
+            document_text=document_text,
+            context_text=context_text,
+            chat_history_pf=chat_history_pf,
+            chat_input=question or "Analyseer het bijgevoegde document."
+        )
+
+        # ---- Call Azure OpenAI Chat ----
         try:
-            pf_data = resp.json()
-            chat_output = extract_chat_output_from_json(pf_data)
-            if not chat_output:
-                chat_output = json.dumps(pf_data)[:4000]
-            return func.HttpResponse(
-                body=json.dumps({"chat_output": chat_output}),
-                status_code=200, mimetype="application/json"
-            )
-        except ValueError:
-            txt = body_text.strip()
-            if txt[:1] == "<" or txt.lower().startswith("<!doctype") or "html" in txt[:200].lower():
-                logging.error("PF returned HTML; vermoedelijk auth/endpoint issue.")
-                return func.HttpResponse(
-                    "AI-dienst gaf HTML terug (mogelijk auth/endpoint fout).",
-                    status_code=502, mimetype="text/plain"
-                )
-            return func.HttpResponse(
-                body=json.dumps({"chat_output": txt[:4000]}),
-                status_code=200, mimetype="application/json"
-            )
+            chat_output = call_chat(system_text, user_text)
+        except Exception as e:
+            logging.exception(f"AOAI chat error: {e}")
+            return func.HttpResponse(f"AI-dienst error: {repr(e)}", status_code=502, mimetype="text/plain")
+
+        return func.HttpResponse(
+            body=json.dumps({"chat_output": chat_output}),
+            status_code=200,
+            mimetype="application/json"
+        )
 
     except Exception as e:
         logging.error("UNHANDLED", exc_info=True)
-
-        # Debug-switch: ?debug=1 geeft 200 + fouttekst (handig tegen SWA maskering)
-        try:
-            qs = req.url.split("?", 1)[1] if "?" in req.url else ""
-            debug_flag = "debug=1" in qs
-        except Exception:
-            debug_flag = False
-
         body_text = f"Unhandled server error: {repr(e)}\n{traceback.format_exc()}"
-        if debug_flag:
-            return func.HttpResponse(json.dumps({"error": body_text}), status_code=200, mimetype="application/json")
         return func.HttpResponse(body_text, status_code=500, mimetype="text/plain")
