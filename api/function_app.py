@@ -352,7 +352,7 @@ def call_chat(system_text: str, user_text: str) -> str:
                 {"role": "system", "content": system_text},
                 {"role": "user",   "content": user_text},
             ],
-            temperature=0.3,
+            temperature=1,
             max_completion_tokens=6000,  # <-- gebruik dit veld (niet max_tokens)
         )
     except TypeError:
@@ -363,7 +363,7 @@ def call_chat(system_text: str, user_text: str) -> str:
                 {"role": "system", "content": system_text},
                 {"role": "user",   "content": user_text},
             ],
-            temperature=0.3,
+            temperature=1,
             max_tokens=6000,
         )
     msg = resp.choices[0].message.content if getattr(resp, "choices", None) else ""
@@ -375,7 +375,7 @@ def call_chat(system_text: str, user_text: str) -> str:
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.3", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot vA.4", status_code=200, mimetype="text/plain")
 
         # Logging intake
         try:
