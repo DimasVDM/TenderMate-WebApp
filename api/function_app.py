@@ -215,124 +215,227 @@ user:
 
     if mode == "QUICKSCAN":
         system = (
-            "Je bent TenderMate, de elite AI-tenderanalist en strategisch bid-adviseur van IT-Workz.\n\n"
-            "Jouw taak: analyseer het volledige aanbestedingsdocument (document_text) en plaats dit altijd in de context "
-            "van de meest relevante voorbeelden uit de IT-Workz kennisbank (context), zoals de Producten- en Diensten Catalogus, "
-            "eerdere aanbestedingen en referentie-documenten."
+            # ——— SYSTEM ———
+            "Je bent TenderMate, de elite AI-tenderanalist en strategisch bid-adviseur van IT-Workz.\n"
+            "Werk in STRICT_FACT_MODE:\n"
+            "- Gebruik alleen informatie uit 'document_text' en 'context'.\n"
+            "- Als iets ontbreekt: schrijf exact “Niet gespecificeerd in stukken.”\n"
+            "- Je mag korte letterlijk geciteerde fragmenten opnemen met aanhalingstekens.\n"
+            "- Geen webzoeken, geen aannames, geen externe feiten.\n\n"
+            "Stijl:\n"
+            "- Schrijf in helder Nederlands, compact maar volledig.\n"
+            "- Gebruik duidelijke Markdown-koppen (##) en subtitels (###).\n"
+            "- Gebruik ✅/❌ en 🟢/🔴 waar gevraagd.\n"
+            "- Plaats tabellen waar dat de leesbaarheid verhoogt."
         )
+
         user = f"""
-{document_line}
+document_text: {document_text or ''}
 
-Maak een strategische quickscan (kwalificatie / go-no-go) op basis van de CONTEXT. Gebruik deze koppen exact in deze volgorde en schrijf in proza, compact maar volledig. Gebruik visuele indicatoren (✅/❌ en 🟢/🔴) waar aangegeven. Waar informatie ontbreekt: “Niet gespecificeerd in stukken.”
-Belangrijk: geef de koppen duidelijk in bold weer (grotere letter/duidelijke typografie) en onderscheid ze visueel van de inhoud.
+Maak een strategische **quickscan (kwalificatie / go-no-go)** op basis van **CONTEXT** (IT-Workz kennisbank, eerdere aanbestedingen, referenties) en het **aangeleverde document**. 
+Volg **deze koppen exact in deze volgorde** en houd je aan STRICT_FACT_MODE.
 
-## Kerngegevens aanbesteding
-- **Naam aanbesteding / opdrachtgever**: [naam | Niet gespecificeerd in stukken]
-- **Soort aanbesteding / procedure**: [type | Niet gespecificeerd in stukken]
-- **Inkoopadviseur / contact**: [naam/organisatie | Niet gespecificeerd in stukken]
-- **Vragen stellen – manier & kanaal**: [wijze | Niet gespecificeerd in stukken]
-- **Aantal vragenronden**: [aantal | Niet gespecificeerd in stukken]
+## Samenvatting in één oogopslag
+- **Advies**: 🟢 Voorwaardelijke Go / 🟡 Twijfel / 🔴 No-Go — in één zin waarom.
+- **Belangrijkste 3 showstoppers/risico’s** (kort, met mitigatie-hint).
+- **Belangrijkste 3 scoringskansen** (kort).
 
-## Organisatieprofiel (onderwijs)
-- **Soort organisatie / onderwijssoort**: [type | Niet gespecificeerd in stukken]
-- **Aantal scholen/locaties**: [aantal | Niet gespecificeerd in stukken]
-- **Aantal medewerkers**: [aantal | Niet gespecificeerd in stukken]
-- **Aantal leerlingen/studenten**: [aantal | Niet gespecificeerd in stukken]
+## Feitenblad (tabel)
+| Veld | Waarde |
+|---|---|
+| **Naam aanbesteding / opdrachtgever** | [waarde of Niet gespecificeerd in stukken] |
+| **Soort aanbesteding/procedure** | [...] |
+| **Sector/organisatie-type** | (bv. Gemeente / Onderwijssoort) |
+| **Aantal locaties/scholen** | [...] |
+| **Aantal medewerkers** | [...] |
+| **Aantal leerlingen/studenten** | [...] |
+| **# vragenronden** | [...] |
+| **Vragen stellen – kanaal/portaal** | [...] |
+| **Inkoopadviseur / contact** | [...] |
+| **Contractduur (basis + opties)** | [...] |
+| **Contractwaarde / richtprijs / prijsplafond** | [...] |
 
 ## Aanleiding en doel
-- Duid kort het “waarom” van de uitvraag.
+Vat beknopt het “waarom” en de doelstellingen samen. Citeer 1–3 sleutelzinnen indien nuttig.
 
 ## Essentie van de uitvraag (scope)
-- Scope/omvang, kernbegrippen; koppel aan CONTEXT.
+- Kernomvang & doelgroep (specificeer sector/onderwijssoort).
+- Koppel expliciet aan CONTEXT (Producten- en Diensten Catalogus, referenties).
 
-## Contract & budget
-- **Looptijd** (basis + opties); **Contractwaarde / richtprijs / prijsplafond**; bijzonderheden.
+## KO-criteria en voorwaarden (checklist)
+- **Uitsluitingsgronden / geschiktheidseisen**: ✅/❌ per onderdeel (referentiesector/omvang/complexiteit; technische/beroepsbekwaamheid).
+- **Normen/certificeringen** (ISO/ISAE/NEN/ENSIA, AVG/DPIA): 🟢 Aanwezig / 🔴 Ontbreekt.
+- **Juridische kaders**: benoem **GIBIT/ARBIT/ARVODI**, AVG/Verwerkersovereenkomst, DPIA, securitybeleid (TLS/HTTP headers).
+- **Conclusie haalbaarheid (harde eisen)**: 1 alinea.
 
-## KO-criteria en voorwaarden
-- Uitsluitingsgronden / geschiktheidseisen (technisch / beroeps), normeringen/certificeringen (ISO/ISAE/NEN/ENSIA), juridische kaders (ARBIT/ARVODI/GIBIT, AVG).
-- Match met IT-Workz Catalogus + haalbaarheidsconclusie.
+## Architectuur & Standaarden (overheidsspecifiek waar relevant)
+- **Common Ground / ZGW-/STUF(-ZKN) / OData**: status & relevantie.
+- **Integraties Microsoft-stapel**: Azure AD (SSO/MFA), Graph API, SharePoint/Teams, Power BI.
+- **Toegankelijkheid**: **WCAG/EN 301 549**; noem expliciet als dit niet gespecificeerd is.
 
-## Gunningscriteria
-- Overzicht + weging (indien beschikbaar) en scorefocus.
-
-## Programma van Eisen/Wensen (samengevat)
-- Cluster per thema (projectorganisatie, techniek/architectuur, privacy/AVG, beheer/SLA, adoptie/training, planning/migratie).
-
-## Analyse van Vereiste Disciplines
-- **Uitvoering** (rollen/skills) + **Bid-team** (rollen voor inschrijving).
+## Programma van Eisen/Wensen (samengevat per cluster)
+- **Projectorganisatie & implementatie**
+- **Techniek/architectuur & integraties**
+- **Privacy/AVG & security (TLS/headers)**
+- **Beheer/Support/SLA**
+- **Adoptie/Training**
+- **Planning/Migratie**
+Noteer opvallende punten en hiaten. Gebruik bullets.
 
 ## Weging, paginabudget en planning
-- Wegingspercentages, paginabudget/verdeling, planning & deadlines.
+- **Weging**: noteer percentages indien aanwezig; anders “Niet gespecificeerd in stukken”.
+- **Paginabudget**: noteer limiet. **Voorstel verdeling** per onderdeel in bullets (op basis van (verwachte) weging).
+- **Planning & deadlines**: lijst alle mijlpalen (vragenronde, indiening, demo/PoC, gunning, start).
 
 ## Budget en concurrentiepositie
-- Signalen budget, concurrenten (indien af te leiden) + sterke/zwakke punten.
+- **Budgetsignalen** (plafond/raming/prijsmechaniek).
+- **Concurrenten (indicatief)** en **positie IT-Workz** o.b.v. CONTEXT (sterktes/zwaktes kort).
 
-## Showstoppers / risico’s (en mitigatie)
-- Lijst + mitigaties of verhelderingsvragen.
+## Showstoppers / risico’s (met mitigatie of verhelderingsvraag)
+- Maak een beknopte lijst met concrete eisen/risico’s + korte mitigatie/te-stellen vraag.
 
 ## Referenties (advies)
-- 2–3 typen referenties + waarom ze passen.
+- Adviseer 2–3 **typen** referenties (branche/omvang/complexiteit) en **waarom** deze scoren. Koppel aan CONTEXT.
 
-## In te dienen bewijsstukken
-- Gevraagde stukken (UEA, KvK, ISO/ISAE, verzekeringen, referenties, DPA, prijsbiljet, etc.) + vergelijking met IT-Workz standaardset en status.
+## In te dienen bewijsstukken & **status**
+- **UEA, KvK, ISO/ISAE, verzekeringen, DPA/Verwerkersovereenkomst, prijzenblad, referentieverklaring**.
+- Zet per stuk: **🟢 Geldig / 🔴 Verlopen/ontbreekt / Niet gespecificeerd in stukken**.
+- Voeg vervaldata toe als die in de CONTEXT staan.
 
 ## Standaard- en verdiepingsvragen
-- Standaard en strategische vragen (incl. vragenprocedure).
+- **Standaardvragen**: verduidelijk scope/eisen/voorwaarden/planning.
+- **Verdiepingsvragen**: strategische “vraag achter de vraag”.
 
 ## Actiechecklist (intern)
-- Concrete to-do’s (taak; eigenaar; datum).
+- (Taak; **Eigenaar**; **Datum**) — 6–10 concrete acties die het bidproces starten.
 
 ## Go/No-Go indicatie (conclusie)
-- Samenvattend advies o.b.v. showstoppers, concurrentie, match portfolio, risico’s, beschikbaarheid bewijs/competenties.
+- **🟢/🟡/🔴** + 4–6 onderbouwende bullets (KO, referenties, normen, concurrentie, fit met Catalogus).
 """.strip() + "\n\n" + common_suffix
 
     elif mode == "REVIEW":
         system = (
-            "Je bent TenderMate, AI-kwaliteitsauditor en kritische kwaliteitsmanager voor aanbestedingen van IT-Workz.\n\n"
-            "Evalueer en verbeter een aangeleverde tekst (document_text) op volledigheid, relevantie en scoringspotentieel."
+            "Je bent TenderMate, AI-kwaliteitsauditor en scoringscoach voor aanbestedingen van IT-Workz.\n"
+            "Werk in STRICT_FACT_MODE:\n"
+            "- Beoordeel uitsluitend t.o.v. het aangeleverde 'document_text', het gunningskader en de CONTEXT.\n"
+            "- Geen aannames; ontbrekende info = “Niet gespecificeerd in stukken.”\n\n"
+            "Stijl:\n"
+            "- Wees concreet, actiegericht, en scoregericht.\n"
+            "- Gebruik checklijsten, tabellen en voorbeeldherschrijvingen.\n"
+            "- Lever geen generieke adviezen: maak ze toetsbaar (SMART, dekking, bewijs)."
         )
+
         user = f"""
-{document_line}
+document_text: {document_text or ''}
 
 OPDRACHT
-Beoordeel en verbeter een (impliciet) aangeleverd stuk t.o.v. gunningscriteria en beoordelingskader. Schrijf in proza; gebruik bullets alleen bij checklists/KPI’s. Noteer hiaten als “Niet gespecificeerd in stukken.” Volg deze koppen exact:
+Beoordeel en **versterk** de tekst t.o.v. gunningscriterium en beoordelingskader. 
+Verbeter op **volledigheid, relevantie, bewijswaarde en scoringspotentieel**. 
+Houd je aan STRICT_FACT_MODE en volg **deze koppen exact**:
 
-## Korte overall beoordeling
-## Fit met gunningskader en eisen
-## KO/voorwaarden en juridische punten
-## SMART & KPI’s
-## Stijl en toon (onderwijs)
-## Paginabudget & structuur
-## Boven verwachting scoren
-## Herschrijfsuggesties (show, don’t tell)
-## Referenties en bewijs
+## Korte overall beoordeling (in 5 bullets)
+- Sterkste punten, grootste gaten, verwachte score-impact.
+
+## Dekking & structuur t.o.v. gunningskader
+- **Dekkingsmatrix (tabel)** – criteriumonderdeel × (Gedekt: ✅/⚠/❌) + 1 regel toelichting per cel.
+- Wel/geen aansluiting op gevraagde indeling en beoordelingsaspecten.
+
+## KO/voorwaarden & juridische punten
+- KO-eisen, uitsluitingsgronden, geschiktheid, normen (ISO/ISAE/NEN/ENSIA), AVG/DPIA, **GIBIT/ARBIT/ARVODI**, security (TLS/HTTP headers).  
+- Conclusie haalbaarheid + expliciete hiaten.
+
+## Architectuur & standaarden (waar relevant)
+- Common Ground / ZGW-/STUF(-ZKN) / OData.\n- Microsoft-integraties (Azure AD, Graph, SharePoint/Teams, Power BI).\n- Toegankelijkheid **WCAG/EN 301 549**.  
+Noteer wat ontbreekt en wat explicieter moet.
+
+## KPI-audit (SMART)
+- Tabel met huidige KPI-zinnen → **verbeterde SMART-variant** + meetmethode + eigenaar.
+- Voeg 2–4 **score-verhogende KPI’s** toe die passen bij het criterium.
+
+## Stijl & tone of voice (doelgroep)
+- Past de toon bij onderwijs/gemeente? Jargon/leesbaarheid, actief taalgebruik, benefits/impact.
+
+## Paginabudget & visuele opbouw
+- Is de tekst binnen limiet? Waar inkorten/uitbreiden.  
+- DTP-tips: tabellen/figuren die score verhogen (bijv. RACI, roadmap, KPI-dashboard).
+
+## “Boven verwachting” (onderscheidend)
+- 5–8 concrete voorstellen (bv. PoC/demo-script, adoptie-interventies, security-assurance, datagedreven monitoring).
+
+## Herschrijfsuggesties (voorbeeld)
+- **Voorbeeldblok(ken)**: geef 1–2 kernparagrafen opnieuw geschreven in **score-proof** stijl (max. ~300 woorden elk).
+
+## Referenties & bewijs (gericht)
+- Adviseer 2–3 **typen** referenties + kort “waarom dit scoort”; koppel aan CONTEXT.
+
 ## Actiechecklist (intern)
+- 8–12 concrete acties met **Eigenaar** en **Datum** (KPI’s aanscherpen, bewijs verzamelen, structuur corrigeren, visuals maken, legal/security checks).
+
+## Eindoordeel (kort)
+- Verwachte score en 3 belangrijkste verbeteracties met grootste impact.
 """.strip() + "\n\n" + common_suffix
 
     else:  # DRAFT
         system = (
-            "Je bent TenderMate, AI-tekstarchitect voor aanbestedingen van IT-Workz.\n\n"
-            "Schrijf een SMART, wervend en praktisch conceptantwoord op een gunningscriterium. "
-            "Gebruik relevante voorbeelden uit de kennisbank (context) en het aangeleverde document (document_text)."
+            "Je bent TenderMate, AI-tekstarchitect voor aanbestedingen van IT-Workz.\n"
+            "Werk in STRICT_FACT_MODE:\n"
+            "- Gebruik alleen informatie uit 'document_text' en 'context'.\n"
+            "- Als iets ontbreekt: schrijf exact “Niet gespecificeerd in stukken.”\n"
+            "- Geen webzoeken, geen aannames.\n\n"
+            "Stijl:\n"
+            "- Schrijf in helder Nederlands, wervend maar feitelijk; proza met korte alinea’s.\n"
+            "- Gebruik duidelijke Markdown-koppen (##/###) en waar nuttig korte tabellen.\n"
+            "- Integreer voorbeelden/quotes uit CONTEXT alleen als ze aantoonbaar relevant zijn."
         )
+
         user = f"""
-{document_line}
+document_text: {document_text or ''}
 
 OPDRACHT
-Genereer een voorstelindeling + compacte conceptinhoud die exact aansluit op gunningscriteria en beoordelingskader. Gebruik deze koppen exact in deze volgorde. Schrijf in proza; bullets alleen bij checklists/KPI’s. Markeer gaten als “Niet gespecificeerd in stukken.”
+Genereer een **scoregericht concept** dat exact aansluit op het gevraagde **gunningscriterium** en het beoordelingskader. 
+Gebruik CONTEXT om passende voorbeelden, referenties en bewijs te verbinden. 
+Houd je aan STRICT_FACT_MODE en volg **deze koppen exact**:
 
-## Inleiding
-## Structuur conform gunningskader
-## Onze aanpak in hoofdlijnen
-## Uitwerking per thema/onderdeel
-## Rollen en beschikbaarheid
-## KPI’s en bewaking (SMART)
-## Planning en mijlpalen
-## Risico’s en beheersmaatregelen
-## Referenties en bewijs
-## Paginabudget en scorefocus
-## Verhelderingsvragen richting aanbestedende dienst
-## Gebruikte bronnen (compact)
+## Executive summary (scorefocus in 5 bullets)
+- Wat vragen ze? Hoe scoren we maximaal? Belangrijkste 3 bewijsankers.
+
+## Begrips- & beoordelingskader (facts)
+- Herformuleer kort het criterium in eigen woorden (1 alinea).
+- Beoordelingsaspecten/weging: noteer percentages indien genoemd; anders “Niet gespecificeerd in stukken”.
+
+## Voorstelstructuur conform criterium
+- Geef de exacte indeling (kopjes/subkopjes) die we in het Word-document kunnen overnemen.
+
+## Uitwerking per subcriterium
+Voor elk subcriterium (of thema) volg dit patroon:
+- **Wat wordt gevraagd (quote/para-phrase)**  
+- **Onze aanpak** (proces/stappen, verantwoordelijkheden)  
+- **Architectuur & integraties** (Azure AD/SSO/MFA, Graph, SharePoint/Teams, Power BI, Common Ground/ZGW/STUF/ OData/ WCAG/EN 301 549 waar relevant)  
+- **KPI’s (SMART)** – inclusief meetmethode, norm, frequentie, eigenaar  
+- **Risico’s & mitigatie** – 1–2 concreet  
+- **Bewijs** – referentie/type bewijs uit CONTEXT (link/naam indien aanwezig)
+
+## Planning & mijlpalen
+- Tabel met fasen, deliverables, afhankelijkheden en mijlpaaldata (indien bekend; anders “Niet gespecificeerd in stukken”).
+
+## Rollen & RACI (compact)
+- Tabel: Activiteit × (R/A/C/I) voor kernrollen (Projectmanager, Solution Architect, Integratie, Security/Privacy, Adoptie/Change, Beheer/SLA).
+
+## KPI-overzicht (tabel)
+| KPI | Definitie | Norm | Meting | Frequentie | Eigenaar |
+
+## Paginabudget & opmaak
+- Noteer limiet (indien opgegeven). Geef **een verdelingsvoorstel** per hoofdstuk met korte motivatie.
+- Tips voor opmaak/illustraties (figuur-/tabelsuggesties) die scoren.
+
+## Referenties & bewijs (gericht)
+- 2–3 **typen** referenties met 1 zin “waarom dit scoort” per type. Koppel aan CONTEXT.
+
+## Verhelderingsvragen aan aanbestedende dienst
+- 6–10 vragen die scoren (duidelijkheid + optimalisatie van aanpak/KPI’s).
+
+## Bronnen/quotes (compact)
+- Noem gebruikte CONTEXT-bronnen of citaten (1 regel per bron).
 """.strip() + "\n\n" + common_suffix
 
     return system, user
@@ -341,33 +444,62 @@ Genereer een voorstelindeling + compacte conceptinhoud die exact aansluit op gun
 
 def call_chat(system_text: str, user_text: str) -> str:
     """
-    Roept Azure OpenAI Chat aan.
-    Let op: voor (nieuwere) modellen is 'max_completion_tokens' vereist i.p.v. 'max_tokens'.
+    Robuuste chat-call:
+    - Forceer platte tekst
+    - Defensief content lezen
+    - Fallback retry als content leeg terugkomt
     """
     client = get_aoai_client()
-    try:
-        resp = client.chat.completions.create(
+
+    def _extract_content(resp) -> str:
+        if not resp or not getattr(resp, "choices", None):
+            return ""
+        ch = resp.choices[0]
+        # Nieuwe SDK's wisselen tussen message.content / content / text
+        # Probeer meerdere velden in volgorde.
+        for attr in (
+            lambda c: getattr(getattr(c, "message", None), "content", None),
+            lambda c: getattr(c, "message", None),   # soms zit de string direct hierin
+            lambda c: getattr(c, "content", None),   # legacy veld
+            lambda c: getattr(c, "text", None),      # sommige modellen
+        ):
+            val = attr(ch)
+            if isinstance(val, str) and val.strip():
+                return val
+        return ""
+
+    # Eerste poging — normale prompt
+    resp = client.chat.completions.create(
+        model=AOAI_CHAT_DEPLOYMENT,
+        messages=[
+            {"role": "system", "content": system_text},
+            {"role": "user",   "content": user_text},
+        ],
+        temperature=1,
+        max_completion_tokens=6000,          # <-- jouw gewenste limiet
+        response_format={"type": "text"},    # <-- forceer platte tekst
+    )
+    content = _extract_content(resp)
+
+    # Fallback: sommige modellen geven tool-calls/lege content terug.
+    if not content.strip():
+        resp2 = client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
             messages=[
                 {"role": "system", "content": system_text},
-                {"role": "user",   "content": user_text},
+                {"role": "user",   "content": user_text + "\n\nGeef je volledige antwoord als platte tekst in het Nederlands, zonder tool-calls of codeblokken."},
             ],
             temperature=1,
-            max_completion_tokens=6000,  # <-- gebruik dit veld (niet max_tokens)
+            max_completion_tokens=6000,
+            response_format={"type": "text"},
         )
-    except TypeError:
-        # fallback voor oudere SDK’s/modellen die nog max_tokens verwachten
-        resp = client.chat.completions.create(
-            model=AOAI_CHAT_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": system_text},
-                {"role": "user",   "content": user_text},
-            ],
-            temperature=1,
-            max_tokens=6000,
-        )
-    msg = resp.choices[0].message.content if getattr(resp, "choices", None) else ""
-    return msg or ""
+        content = _extract_content(resp2)
+
+    # Laat tenminste iets zien i.p.v. lege string
+    if not content.strip():
+        content = "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of wijzig je vraag licht."
+
+    return content
 
 # ---------------- HTTP Function ----------------
 
@@ -375,7 +507,7 @@ def call_chat(system_text: str, user_text: str) -> str:
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.4", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot vA.5", status_code=200, mimetype="text/plain")
 
         # Logging intake
         try:
