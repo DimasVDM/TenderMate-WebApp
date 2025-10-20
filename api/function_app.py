@@ -444,62 +444,104 @@ Voor elk subcriterium (of thema) volg dit patroon:
 
 def call_chat(system_text: str, user_text: str) -> str:
     """
-    Robuuste chat-call:
-    - Forceer platte tekst
-    - Defensief content lezen
-    - Fallback retry als content leeg terugkomt
+    Robust chat-call:
+    - Force text output
+    - Disallow tool calls
+    - Extract from string OR list-of-parts
+    - Fallback retry with an explicit instruction
+    - Log finish_reason for debugging
     """
     client = get_aoai_client()
 
-    def _extract_content(resp) -> str:
-        if not resp or not getattr(resp, "choices", None):
+    def _extract_content_from_choice(choice) -> str:
+        """
+        Handle multiple shapes:
+        - choice.message.content: str
+        - choice.message.content: list[{'type':'text','text':'...'}, ...]
+        - choice.message.refusal: str (rare)
+        """
+        msg = getattr(choice, "message", None)
+        if msg is None:
             return ""
-        ch = resp.choices[0]
-        # Nieuwe SDK's wisselen tussen message.content / content / text
-        # Probeer meerdere velden in volgorde.
-        for attr in (
-            lambda c: getattr(getattr(c, "message", None), "content", None),
-            lambda c: getattr(c, "message", None),   # soms zit de string direct hierin
-            lambda c: getattr(c, "content", None),   # legacy veld
-            lambda c: getattr(c, "text", None),      # sommige modellen
-        ):
-            val = attr(ch)
-            if isinstance(val, str) and val.strip():
-                return val
+
+        # 1) Plain string
+        con = getattr(msg, "content", None)
+        if isinstance(con, str) and con.strip():
+            return con
+
+        # 2) List-of-parts (some omni/4o variants)
+        if isinstance(con, list):
+            parts_text = []
+            for part in con:
+                # part can be dict-like; be defensive
+                try:
+                    if isinstance(part, dict):
+                        if part.get("type") == "text" and isinstance(part.get("text"), str):
+                            parts_text.append(part["text"])
+                    else:
+                        # Some SDKs turn parts into objects with attributes
+                        ptype = getattr(part, "type", None)
+                        ptext = getattr(part, "text", None)
+                        if ptype == "text" and isinstance(ptext, str):
+                            parts_text.append(ptext)
+                except Exception:
+                    pass
+            if parts_text:
+                return "\n".join(t for t in parts_text if t and t.strip())
+
+        # 3) Refusal field (if present)
+        ref = getattr(msg, "refusal", None)
+        if isinstance(ref, str) and ref.strip():
+            return ref
+
         return ""
 
-    # Eerste poging — normale prompt
-    resp = client.chat.completions.create(
-        model=AOAI_CHAT_DEPLOYMENT,
-        messages=[
-            {"role": "system", "content": system_text},
-            {"role": "user",   "content": user_text},
-        ],
-        temperature=1,
-        max_completion_tokens=6000,          # <-- jouw gewenste limiet
-        response_format={"type": "text"},    # <-- forceer platte tekst
-    )
-    content = _extract_content(resp)
-
-    # Fallback: sommige modellen geven tool-calls/lege content terug.
-    if not content.strip():
-        resp2 = client.chat.completions.create(
+    def _call(messages):
+        # Some AOAI deployments reject response_format; keep it optional
+        return client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": system_text},
-                {"role": "user",   "content": user_text + "\n\nGeef je volledige antwoord als platte tekst in het Nederlands, zonder tool-calls of codeblokken."},
-            ],
+            messages=messages,
             temperature=1,
             max_completion_tokens=6000,
-            response_format={"type": "text"},
+            tool_choice="none",         # <-- disallow tool/function calls
+            # response_format={"type": "text"},  # uncomment if your deployment supports it
         )
-        content = _extract_content(resp2)
 
-    # Laat tenminste iets zien i.p.v. lege string
+    base_messages = [
+        {"role": "system", "content": system_text},
+        {"role": "user",   "content": user_text},
+    ]
+
+    # First attempt
+    resp = _call(base_messages)
+    try:
+        finish_reason = getattr(resp.choices[0], "finish_reason", None)
+        logging.info(f"AOAI finish_reason (try1): {finish_reason}")
+    except Exception:
+        pass
+
+    content = _extract_content_from_choice(resp.choices[0]) if getattr(resp, "choices", None) else ""
+
+    # Fallback attempt if empty
     if not content.strip():
+        fallback_messages = [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_text + "\n\nGeef je volledige antwoord als **platte tekst** in het Nederlands, zonder tool-calls, zonder afbeeldingen, zonder codeblokken."}
+        ]
+        resp2 = _call(fallback_messages)
+        try:
+            finish_reason2 = getattr(resp2.choices[0], "finish_reason", None)
+            logging.info(f"AOAI finish_reason (try2): {finish_reason2}")
+        except Exception:
+            pass
+
+        content = _extract_content_from_choice(resp2.choices[0]) if getattr(resp2, "choices", None) else ""
+
+    if not content or not content.strip():
         content = "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of wijzig je vraag licht."
 
     return content
+
 
 # ---------------- HTTP Function ----------------
 
