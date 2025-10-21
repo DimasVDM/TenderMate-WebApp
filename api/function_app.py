@@ -445,8 +445,11 @@ Voor elk subcriterium (of thema) volg dit patroon:
 
 def call_chat(system_text: str, user_text: str) -> str:
     """
-    AOAI chat zonder tool_choice/response_format.
-    Gebruikt max_completion_tokens. Pakt ook list-of-parts content.
+    Robuuste AOAI chat:
+    - Geen tool_choice-parameter (Azure verbiedt dat zonder tools)
+    - Lage temperatuur om tool_call-neiging te verlagen
+    - Extractie ondersteunt zowel string als parts
+    - Herken 'tool_calls' finish_reason en val terug met expliciet 'platte tekst'-instructie
     """
     client = get_aoai_client()
 
@@ -454,15 +457,20 @@ def call_chat(system_text: str, user_text: str) -> str:
         try:
             if not getattr(resp, "choices", None):
                 return ""
-            choice = resp.choices[0]
-            msg = getattr(choice, "message", None)
+            ch = resp.choices[0]
+            msg = getattr(ch, "message", None)
             if msg is None:
-                return ""
+                # Sommige SDK versies stoppen een top-level 'content' op choice
+                top = getattr(ch, "content", None)
+                return (top or "").strip() if isinstance(top, str) else ""
+
             content = getattr(msg, "content", None)
 
+            # 1) Plain string
             if isinstance(content, str) and content.strip():
                 return content.strip()
 
+            # 2) Parts-lijst
             if isinstance(content, list):
                 parts = []
                 for part in content:
@@ -480,6 +488,7 @@ def call_chat(system_text: str, user_text: str) -> str:
                 if parts:
                     return "\n".join(t for t in parts if t and t.strip())
 
+            # 3) Refusal fallback
             refusal = getattr(msg, "refusal", None)
             if isinstance(refusal, str) and refusal.strip():
                 return refusal.strip()
@@ -491,19 +500,21 @@ def call_chat(system_text: str, user_text: str) -> str:
         return client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
             messages=messages,
-            temperature=1,
-            max_completion_tokens=3500,  # veiliger grens
+            temperature=0.2,             # lager helpt tegen tool-calls/onzin
+            max_completion_tokens=2800,  # ruim, maar niet absurd
         )
 
-    base_messages = [
+    base = [
         {"role": "system", "content": system_text},
         {"role": "user",   "content": user_text},
     ]
 
-    resp = _call(base_messages)
+    # Eerste poging
+    resp = _call(base)
+    finish_reason = None
     try:
-        fr = getattr(resp.choices[0], "finish_reason", None)
-        logging.info(f"AOAI finish_reason (try1)={fr}")
+        finish_reason = getattr(resp.choices[0], "finish_reason", None)
+        logging.info(f"AOAI finish_reason try1 = {finish_reason}")
     except Exception:
         pass
 
@@ -511,20 +522,25 @@ def call_chat(system_text: str, user_text: str) -> str:
     if content:
         return content
 
-    # Fallback: expliciet om platte tekst vragen
-    fallback_messages = [
+    # Als het model tool_calls deed of leeg bleef: dwing platte tekst nog explicieter af
+    fallback = [
         {"role": "system", "content": system_text},
-        {"role": "user", "content": user_text + "\n\nGeef je volledige antwoord als platte tekst in het Nederlands (geen tools/afbeeldingen/codeblokken)."}
+        {"role": "user", "content": user_text + "\n\nGeef je volledige antwoord als **platte tekst** in het Nederlands (GEEN tools/function-calls, GEEN codeblokken, GEEN afbeeldingen)."}
     ]
-    resp2 = _call(fallback_messages)
+    resp2 = _call(fallback)
     try:
         fr2 = getattr(resp2.choices[0], "finish_reason", None)
-        logging.info(f"AOAI finish_reason (try2)={fr2}")
+        logging.info(f"AOAI finish_reason try2 = {fr2}")
     except Exception:
         pass
-
     content2 = _extract_content(resp2)
-    return content2 or "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of wijzig je vraag licht."
+    if content2:
+        return content2
+
+    # Als het nog steeds niet lukt, laat zien wat finish_reason was (debug voor jou)
+    hint = f" (finish_reason: {finish_reason})" if finish_reason else ""
+    return "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of wijzig je vraag licht." + hint
+
 
 # ---------------- HTTP Function ----------------
 
@@ -532,7 +548,7 @@ def call_chat(system_text: str, user_text: str) -> str:
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.19", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot vA.20", status_code=200, mimetype="text/plain")
 
         # Logging intake
         try:
