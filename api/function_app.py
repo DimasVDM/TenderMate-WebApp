@@ -500,7 +500,7 @@ def call_chat(system_text: str, user_text: str) -> str:
         return client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
             messages=messages,
-            temperature=0.2,             # lager helpt tegen tool-calls/onzin
+            temperature=1,             # lager helpt tegen tool-calls/onzin
             max_completion_tokens=2800,  # ruim, maar niet absurd
         )
 
@@ -548,7 +548,7 @@ def call_chat(system_text: str, user_text: str) -> str:
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.20", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot vA.21", status_code=200, mimetype="text/plain")
 
         # Logging intake
         try:
