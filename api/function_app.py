@@ -40,13 +40,13 @@ AZURE_SEARCH_INDEX   = os.environ.get("AZURE_SEARCH_INDEX", "sharepoint-vectoriz
 # Vector veld & semantic config zoals in jouw index
 TEXT_VECTOR_FIELD = "text_vector"
 SEMANTIC_CONFIG   = "sharepoint-vectorizer-semantic-configuration"
-TOP_K             = int(os.environ.get("TOP_K", "12"))
+TOP_K             = int(os.environ.get("TOP_K", "6"))
 
 # Azure OpenAI
 AOAI_ENDPOINT          = os.environ.get("AOAI_ENDPOINT", "").rstrip("/")
 AOAI_API_KEY           = os.environ.get("AOAI_API_KEY", "")
 AOAI_CHAT_DEPLOYMENT   = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5")  # pas aan naar jouw deploymentnaam
-AOAI_EMBED_DEPLOYMENT  = os.environ.get("AOAI_EMBED_DEPLOYMENT", "text-embedding-3-large")  # 3072-dim
+AOAI_EMBED_DEPLOYMENT  = os.environ.get("AOAI_EMBED_DEPLOYMENT", "text-embedding-3-small")  # 3072-dim
 
 # ---------------------------------------------------
 
@@ -453,54 +453,42 @@ def call_chat(system_text: str, user_text: str) -> str:
     client = get_aoai_client()
 
     def _extract_content(resp) -> str:
-        """
-        Haal tekst uit verschillende responsvormen:
-        - resp.choices[0].message.content -> str
-        - resp.choices[0].message.content -> list[{'type':'text','text':...}, ...]
-        - resp.choices[0].message.refusal -> str
-        """
         try:
-            if not getattr(resp, "choices", None):
-                return ""
-
             choice = resp.choices[0]
             msg = getattr(choice, "message", None)
-            if msg is None:
+            if not msg:
                 return ""
-
             content = getattr(msg, "content", None)
 
-            # 1) Plain string
+            # 1) String
             if isinstance(content, str) and content.strip():
                 return content.strip()
 
-            # 2) List-of-parts (sommige AOAI deployments doen dit)
+            # 2) List-of-parts: pak alle onderdelen met een 'text' veld, ongeacht 'type'
             if isinstance(content, list):
-                parts_text = []
+                texts = []
                 for part in content:
                     try:
+                        # dict of pydantic-like
                         if isinstance(part, dict):
-                            if part.get("type") in ("text", "output_text") and isinstance(part.get("text"), str):
-                                parts_text.append(part["text"])
+                            t = part.get("text")
                         else:
-                            # parts als object met attributes
-                            ptype = getattr(part, "type", None)
-                            ptext = getattr(part, "text", None)
-                            if ptype in ("text", "output_text") and isinstance(ptext, str):
-                                parts_text.append(ptext)
+                            t = getattr(part, "text", None)
+                        if isinstance(t, str) and t.strip():
+                            texts.append(t.strip())
                     except Exception:
                         pass
-                if parts_text:
-                    return "\n".join(t for t in parts_text if t and t.strip())
+                if texts:
+                    return "\n".join(texts)
 
-            # 3) Refusal (zeldzaam, maar dan heb je in elk geval tekst)
+            # 3) Refusal fallback
             refusal = getattr(msg, "refusal", None)
             if isinstance(refusal, str) and refusal.strip():
                 return refusal.strip()
-
-            return ""
         except Exception:
-            return ""
+            pass
+        return ""
+
 
     def _call(messages):
         # Geen tool_choice, geen response_format; dat gaf eerder 400's.
