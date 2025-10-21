@@ -497,7 +497,7 @@ def call_chat(system_text: str, user_text: str) -> str:
             model=AOAI_CHAT_DEPLOYMENT,
             messages=messages,
             temperature=1,
-            max_tokens=6000,   # i.p.v. max_completion_tokens
+            max_completion_tokens=6000,   # i.p.v. max_completion_tokens
         )
 
     base_messages = [
@@ -525,7 +525,7 @@ def call_chat(system_text: str, user_text: str) -> str:
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.7", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot vA.8", status_code=200, mimetype="text/plain")
 
         # Logging intake
         try:
