@@ -484,7 +484,7 @@ def call_chat(system_text: str, user_text: str) -> str:
                 messages=messages,
                 temperature=1,               # lager = consistenter in STRICT_FACT_MODE
                 max_completion_tokens=6000,  # probeer veel tokens voor lange antwoorden
-                timeout=30,
+                timeout=300,
             )
         except Exception as e:
             msg = str(e).lower()
@@ -494,7 +494,7 @@ def call_chat(system_text: str, user_text: str) -> str:
                     messages=messages,
                     temperature=1,
                     max_tokens=6000,
-                    timeout=30,
+                    timeout=300,
                 )
             raise
 
@@ -538,7 +538,7 @@ def call_chat(system_text: str, user_text: str) -> str:
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.15", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot vA.16", status_code=200, mimetype="text/plain")
 
         # Logging intake
         try:
