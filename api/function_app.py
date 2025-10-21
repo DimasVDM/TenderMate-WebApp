@@ -13,6 +13,7 @@ import re
 import zipfile
 import traceback
 import binascii
+import time
 from typing import List, Dict, Any
 
 # ---- Bestandslezers ----
@@ -442,41 +443,94 @@ Voor elk subcriterium (of thema) volg dit patroon:
 
 # ---------------- Chat call ----------------
 
+def _extract_content(resp) -> str:
+    """Robuuste extractie: string of list-of-parts met 'text' veld."""
+    try:
+        choice = resp.choices[0]
+        msg = getattr(choice, "message", None)
+        if not msg:
+            return ""
+        content = getattr(msg, "content", None)
+
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+        if isinstance(content, list):
+            texts = []
+            for part in content:
+                try:
+                    t = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+                    if isinstance(t, str) and t.strip():
+                        texts.append(t.strip())
+                except Exception:
+                    pass
+            if texts:
+                return "\n".join(texts)
+
+        refusal = getattr(msg, "refusal", None)
+        if isinstance(refusal, str) and refusal.strip():
+            return refusal.strip()
+    except Exception:
+        pass
+    return ""
+
 def call_chat(system_text: str, user_text: str) -> str:
     client = get_aoai_client()
-    try:
-        resp = client.chat.completions.create(
-            model=AOAI_CHAT_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": system_text},
-                {"role": "user", "content": user_text},
-            ],
-            temperature=1,
-            max_completion_tokens=6000,  # <-- gebruik dit veld (niet max_tokens)
-        )
-    except TypeError:
-        # Fallback for SDKs that expect max_tokens instead
-        resp = client.chat.completions.create(
-            model=AOAI_CHAT_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": system_text},
-                {"role": "user", "content": user_text},
-            ],
-            temperature=1,
-            max_tokens=6000,
-        )
 
-    # Extract message text robustly across possible response shapes
-    msg = ""
-    if getattr(resp, "choices", None):
-        choice = resp.choices[0]
-        if hasattr(choice, "message") and getattr(choice.message, "content", None) is not None:
-            msg = choice.message.content
-        else:
-            # fallback to older/alternate shapes
-            msg = getattr(choice, "text", None) or getattr(choice, "content", None) or ""
+    def _call(messages):
+        try:
+            return client.chat.completions.create(
+                model=AOAI_CHAT_DEPLOYMENT,
+                messages=messages,
+                temperature=1,               # lager = consistenter in STRICT_FACT_MODE
+                max_completion_tokens=6000,  # probeer veel tokens voor lange antwoorden
+                timeout=30,
+            )
+        except Exception as e:
+            msg = str(e).lower()
+            if "unsupported parameter" in msg and "max_completion_tokens" in msg:
+                return client.chat.completions.create(
+                    model=AOAI_CHAT_DEPLOYMENT,
+                    messages=messages,
+                    temperature=1,
+                    max_tokens=6000,
+                    timeout=30,
+                )
+            raise
 
-    return msg or ""
+    messages = [
+        {"role": "system", "content": system_text},
+        {"role": "user",   "content": user_text},
+    ]
+
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            resp = _call(messages)
+            content = _extract_content(resp)
+            if content:
+                return content
+        except Exception as e:
+            es = str(e)
+            if attempts < 3 and any(x in es for x in ("429", "timeout", "temporarily", "unavailable", "503")):
+                time.sleep(1.0 * attempts)
+                continue
+            logging.exception(f"AOAI chat error: {e}")
+            raise
+
+        # laatste poging: expliciet om platte tekst vragen
+        if attempts >= 2:
+            resp2 = _call([
+                {"role": "system", "content": system_text},
+                {"role": "user",   "content": user_text + "\n\nGeef je volledige antwoord als platte tekst in het Nederlands (geen tools, geen codeblokken)."},
+            ])
+            content2 = _extract_content(resp2)
+            if content2:
+                return content2
+
+        if attempts >= 3:
+            return "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of wijzig je vraag licht."
 
 # ---------------- HTTP Function ----------------
 
@@ -484,7 +538,7 @@ def call_chat(system_text: str, user_text: str) -> str:
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.13", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot vA.15", status_code=200, mimetype="text/plain")
 
         # Logging intake
         try:
