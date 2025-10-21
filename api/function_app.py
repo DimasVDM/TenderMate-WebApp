@@ -451,11 +451,7 @@ def call_chat(system_text: str, user_text: str) -> str:
             {"role": "user",   "content": user_text},
         ],
         temperature=1,
-        max_completion_tokens=4000,
-        top_p=0.95,
-        frequency_penalty=0,
-        presence_penalty=0,
-        stop=None,
+        max_completion_tokens=6000,
     )
     return resp.choices[0].message.content  
 
@@ -466,7 +462,7 @@ def call_chat(system_text: str, user_text: str) -> str:
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.12", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot vA.13", status_code=200, mimetype="text/plain")
 
         # Logging intake
         try:
