@@ -47,7 +47,7 @@ TOP_K             = int(os.environ.get("TOP_K", "6"))
 AOAI_ENDPOINT          = os.environ.get("AOAI_ENDPOINT", "").rstrip("/")
 AOAI_API_KEY           = os.environ.get("AOAI_API_KEY", "")
 AOAI_CHAT_DEPLOYMENT   = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5")  # pas aan naar jouw deploymentnaam
-AOAI_EMBED_DEPLOYMENT  = os.environ.get("AOAI_EMBED_DEPLOYMENT", "text-embedding-large")  # 3072-dim
+AOAI_EMBED_DEPLOYMENT  = os.environ.get("AOAI_EMBED_DEPLOYMENT", "text-embedding-3-large")  # 3072-dim
 
 # ---------------------------------------------------
 
@@ -80,6 +80,30 @@ def get_aoai_client() -> AzureOpenAI:
             azure_endpoint=AOAI_ENDPOINT
         )
     return _aoai_client
+
+# --- Simple length guards (char-based; good enough without a tokenizer) ---
+def _clip(txt: str, max_chars: int) -> str:
+    if not txt:
+        return ""
+    if len(txt) <= max_chars:
+        return txt
+    # try to cut on a boundary
+    cut = txt[:max_chars]
+    # hard stop
+    return cut
+
+def _join_docs_for_context(docs, per_doc_chars=2000, max_docs=6, max_context_chars=24000) -> str:
+    blocks = []
+    for d in docs[:max_docs]:
+        src = d.get("source") or ""
+        pid = d.get("parent_id") or ""
+        label = src if not pid else f"{src} (parent: {pid})"
+        content = _clip(d.get("content","") or "", per_doc_chars)
+        blocks.append(f"Content:\n{content}\nSource: {label}")
+        joined = "\n\n".join(blocks)
+        if len(joined) >= max_context_chars:
+            break
+    return "\n\n".join(blocks)
 
 # ---------------- Helpers: conversation & parsing ----------------
 
@@ -443,103 +467,117 @@ Voor elk subcriterium (of thema) volg dit patroon:
 
 # ---------------- Chat call ----------------
 
-def call_chat(system_text: str, user_text: str) -> str:
+def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     """
-    Robuuste AOAI chat:
-    - Geen tool_choice-parameter (Azure verbiedt dat zonder tools)
-    - Lage temperatuur om tool_call-neiging te verlagen
-    - Extractie ondersteunt zowel string als parts
-    - Herken 'tool_calls' finish_reason en val terug met expliciet 'platte tekst'-instructie
+    Robust AOAI call:
+    - mode-aware max_completion_tokens (QUICKSCAN/DRAFT need more)
+    - no tool_choice / no response_format
+    - handles text or list-of-parts content
+    - retries on empty/length with bigger budget, then compact output
+    - logs token usage & finish_reason
     """
     client = get_aoai_client()
 
-    def _extract_content(resp) -> str:
-        try:
-            if not getattr(resp, "choices", None):
-                return ""
-            ch = resp.choices[0]
-            msg = getattr(ch, "message", None)
-            if msg is None:
-                # Sommige SDK versies stoppen een top-level 'content' op choice
-                top = getattr(ch, "content", None)
-                return (top or "").strip() if isinstance(top, str) else ""
-
-            content = getattr(msg, "content", None)
-
-            # 1) Plain string
-            if isinstance(content, str) and content.strip():
-                return content.strip()
-
-            # 2) Parts-lijst
-            if isinstance(content, list):
-                parts = []
-                for part in content:
-                    try:
-                        if isinstance(part, dict):
-                            if part.get("type") in ("text", "output_text") and isinstance(part.get("text"), str):
-                                parts.append(part["text"])
-                        else:
-                            ptype = getattr(part, "type", None)
-                            ptext = getattr(part, "text", None)
-                            if ptype in ("text", "output_text") and isinstance(ptext, str):
-                                parts.append(ptext)
-                    except Exception:
-                        pass
-                if parts:
-                    return "\n".join(t for t in parts if t and t.strip())
-
-            # 3) Refusal fallback
-            refusal = getattr(msg, "refusal", None)
-            if isinstance(refusal, str) and refusal.strip():
-                return refusal.strip()
-        except Exception:
-            pass
+    def _extract(choice) -> str:
+        msg = getattr(choice, "message", None)
+        if msg is None:
+            con = getattr(choice, "content", None)
+            return con.strip() if isinstance(con, str) else ""
+        con = getattr(msg, "content", None)
+        if isinstance(con, str) and con.strip():
+            return con.strip()
+        if isinstance(con, list):
+            parts = []
+            for p in con:
+                try:
+                    if isinstance(p, dict):
+                        if p.get("type") in ("text", "output_text") and isinstance(p.get("text"), str):
+                            parts.append(p["text"])
+                    else:
+                        if getattr(p, "type", None) in ("text", "output_text") and isinstance(getattr(p, "text", None), str):
+                            parts.append(getattr(p, "text"))
+                except Exception:
+                    pass
+            if parts:
+                return "\n".join(x for x in parts if x and x.strip())
+        ref = getattr(msg, "refusal", None)
+        if isinstance(ref, str) and ref.strip():
+            return ref.strip()
         return ""
 
-    def _call(messages):
+    # Mode-aware budgets
+    mode = (mode_hint or "").upper()
+    if mode == "QUICKSCAN":
+        max_out_1, max_out_2 = 5200, 7200
+    elif mode == "DRAFT":
+        max_out_1, max_out_2 = 4800, 6800
+    else:  # REVIEW or unknown
+        max_out_1, max_out_2 = 3000, 4800
+
+    def _call(messages, max_out):
         return client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
             messages=messages,
-            temperature=1,             # lager helpt tegen tool-calls/onzin
-            max_completion_tokens=2800,  # ruim, maar niet absurd
+            temperature=1,
+            max_completion_tokens=max_out,
         )
 
-    base = [
+    base_msgs = [
         {"role": "system", "content": system_text},
         {"role": "user",   "content": user_text},
     ]
 
-    # Eerste poging
-    resp = _call(base)
-    finish_reason = None
+    # Try 1
+    resp = _call(base_msgs, max_out_1)
+    choice = resp.choices[0] if getattr(resp, "choices", None) else None
+    finish = getattr(choice, "finish_reason", None) if choice else None
     try:
-        finish_reason = getattr(resp.choices[0], "finish_reason", None)
-        logging.info(f"AOAI finish_reason try1 = {finish_reason}")
+        usage = getattr(resp, "usage", None)
+        if usage:
+            logging.info(f"usage t={usage.total_tokens} p={usage.prompt_tokens} c={usage.completion_tokens}, finish={finish}")
+        else:
+            logging.info(f"finish_reason={finish}")
     except Exception:
         pass
 
-    content = _extract_content(resp)
-    if content:
-        return content
+    text = _extract(choice) if choice else ""
+    if text and text.strip():
+        return text.strip()
 
-    # Als het model tool_calls deed of leeg bleef: dwing platte tekst nog explicieter af
-    fallback = [
+    # Try 2: bigger budget OR explicitly ask for plain text if length/empty
+    retry_msgs = [
         {"role": "system", "content": system_text},
-        {"role": "user", "content": user_text + "\n\nGeef je volledige antwoord als **platte tekst** in het Nederlands (GEEN tools/function-calls, GEEN codeblokken, GEEN afbeeldingen)."}
+        {"role": "user",   "content": user_text + "\n\nGeef het volledige antwoord als platte tekst in het Nederlands (geen tools/afbeeldingen/code)."}
     ]
-    resp2 = _call(fallback)
+    resp2 = _call(retry_msgs, max_out_2)
+    choice2 = resp2.choices[0] if getattr(resp2, "choices", None) else None
+    finish2 = getattr(choice2, "finish_reason", None) if choice2 else None
     try:
-        fr2 = getattr(resp2.choices[0], "finish_reason", None)
-        logging.info(f"AOAI finish_reason try2 = {fr2}")
+        usage2 = getattr(resp2, "usage", None)
+        if usage2:
+            logging.info(f"retry usage t={usage2.total_tokens} p={usage2.prompt_tokens} c={usage2.completion_tokens}, finish={finish2}")
+        else:
+            logging.info(f"retry finish_reason={finish2}")
     except Exception:
         pass
-    content2 = _extract_content(resp2)
-    if content2:
-        return content2
 
-    # Als het nog steeds niet lukt, laat zien wat finish_reason was (debug voor jou)
-    hint = f" (finish_reason: {finish_reason})" if finish_reason else ""
-    return "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of wijzig je vraag licht." + hint
+    text2 = _extract(choice2) if choice2 else ""
+    if text2 and text2.strip():
+        return text2.strip()
+
+    # Try 3: compact answer (so the user still gets something)
+    compact_msgs = [
+        {"role": "system", "content": system_text},
+        {"role": "user",   "content": user_text + "\n\nANTWOORD BEPERKT: Geef een compacte versie (max. ~600 woorden), alleen de hoofdlijnen en tabellen, platte tekst."}
+    ]
+    resp3 = _call(compact_msgs, 1800)
+    choice3 = resp3.choices[0] if getattr(resp3, "choices", None) else None
+    text3 = _extract(choice3) if choice3 else ""
+
+    if text3 and text3.strip():
+        return text3.strip()
+
+    return "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of verlaag de omvang (minder context of kortere vraag)."
 
 
 # ---------------- HTTP Function ----------------
@@ -657,7 +695,12 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             # We gaan door zonder RAG-context
             docs = []
 
-        context_text = build_context(docs)
+        context_text = _join_docs_for_context(docs, per_doc_chars=1800, max_docs=5, max_context_chars=18000)
+
+        # Trim raw inputs to avoid blowing the context window
+        document_text = _clip(document_text, 40000)
+        if isinstance(conversation, list) and len(conversation) > 8:
+            conversation = conversation[-8:]
 
         # ---- Chat history als PF-achtig blok ----
         chat_history_pf = format_history_for_prompt_flow(conversation)
@@ -673,7 +716,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
 
         # ---- Call Azure OpenAI Chat ----
         try:
-            chat_output = call_chat(system_text, user_text)
+            chat_output = call_chat(system_text, user_text, mode_hint=mode_final)
         except Exception as e:
             logging.exception(f"AOAI chat error: {e}")
             return func.HttpResponse(f"AI-dienst error: {repr(e)}", status_code=502, mimetype="text/plain")
