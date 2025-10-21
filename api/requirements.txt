@@ -1,10 +1,15 @@
-# DO NOT include azure-functions-worker in this file
-# The Python Worker is managed by Azure Functions platform
-# Manually managing azure-functions-worker may cause unexpected issues
+# Azure Functions runtime lib (VERPLICHT)
+azure-functions==1.20.0
 
+# Azure Search SDK (vector + semantic)
 azure-search-documents==11.6.0b2
-azure-core>=1.30.0
-openai>=1.35.7
-requests-toolbelt
-pypdf
-python-docx
+azure-core>=1.36.0
+
+# Azure OpenAI SDK (je gebruikt `from openai import AzureOpenAI`)
+openai>=2.5.0
+
+# Upload/parsing
+requests-toolbelt>=1.0.0
+pypdf>=6.1.2
+python-docx>=1.2.0
+lxml>=4.9.3

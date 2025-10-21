@@ -4,8 +4,20 @@
     "applicationInsights": {
       "samplingSettings": {
         "isEnabled": true,
-        "excludedTypes": "Request"
+        "excludedTypes": ""   
       }
+    },
+    "logLevel": {
+      "default": "Information",
+      "Host.Results": "Information",
+      "Function": "Information",
+      "Function.TalkToTenderBot": "Information"
+    }
+    
+  },
+  "extensions": {
+    "http": {
+      "routePrefix": "api"   
     }
   },
   "extensionBundle": {
