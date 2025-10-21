@@ -444,17 +444,39 @@ Voor elk subcriterium (of thema) volg dit patroon:
 
 def call_chat(system_text: str, user_text: str) -> str:
     client = get_aoai_client()
-    resp = client.chat.completions.create(
-        model=AOAI_CHAT_DEPLOYMENT,
-        messages=[
-            {"role": "system", "content": system_text},
-            {"role": "user",   "content": user_text},
-        ],
-        temperature=1,
-        max_completion_tokens=6000,
-    )
-    return resp.choices[0].message.content  
+    try:
+        resp = client.chat.completions.create(
+            model=AOAI_CHAT_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
+            ],
+            temperature=1,
+            max_completion_tokens=6000,  # <-- gebruik dit veld (niet max_tokens)
+        )
+    except TypeError:
+        # Fallback for SDKs that expect max_tokens instead
+        resp = client.chat.completions.create(
+            model=AOAI_CHAT_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
+            ],
+            temperature=1,
+            max_tokens=6000,
+        )
 
+    # Extract message text robustly across possible response shapes
+    msg = ""
+    if getattr(resp, "choices", None):
+        choice = resp.choices[0]
+        if hasattr(choice, "message") and getattr(choice.message, "content", None) is not None:
+            msg = choice.message.content
+        else:
+            # fallback to older/alternate shapes
+            msg = getattr(choice, "text", None) or getattr(choice, "content", None) or ""
+
+    return msg or ""
 
 # ---------------- HTTP Function ----------------
 
