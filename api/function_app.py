@@ -41,16 +41,25 @@ AZURE_SEARCH_INDEX   = os.environ.get("AZURE_SEARCH_INDEX", "sharepoint-vectoriz
 # Vector veld & semantic config zoals in jouw index
 TEXT_VECTOR_FIELD = "text_vector"
 SEMANTIC_CONFIG   = "sharepoint-vectorizer-semantic-configuration"
-TOP_K             = int(os.environ.get("TOP_K", "6"))
+TOP_K             = int(os.environ.get("TOP_K", "6"))  # blijft 6
 
 # Azure OpenAI
 AOAI_ENDPOINT          = os.environ.get("AOAI_ENDPOINT", "").rstrip("/")
 AOAI_API_KEY           = os.environ.get("AOAI_API_KEY", "")
-AOAI_CHAT_DEPLOYMENT   = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5")  # pas aan naar jouw deploymentnaam
+AOAI_CHAT_DEPLOYMENT   = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5")
 AOAI_EMBED_DEPLOYMENT  = os.environ.get("AOAI_EMBED_DEPLOYMENT", "text-embedding-3-large")  # 3072-dim
 
 # Contextlimieten
 MAX_CONTEXT_DOCS   = int(os.environ.get("MAX_CONTEXT_DOCS", "10"))
+
+# --- CORS config (whitelist exact origins) ---
+ALLOWED_ORIGINS = set([
+    "https://nice-bay-0e1280e03.2.azurestaticapps.net",  # jouw Static Web Apps origin
+    # voeg hier evt. extra origins toe
+])
+ALLOWED_METHODS = "GET,POST,OPTIONS"
+ALLOWED_HEADERS = "Content-Type,Authorization,x-functions-key"
+ALLOW_CREDENTIALS = "true"   # zet op "false" als je geen credentials gebruikt
 
 # ---------------------------------------------------
 
@@ -59,6 +68,18 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 # Lazy clients
 _search_client = None
 _aoai_client   = None
+
+def _cors_headers(req: func.HttpRequest):
+    origin = (req.headers.get("Origin") or "").rstrip("/")
+    if origin in ALLOWED_ORIGINS:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Vary": "Origin",
+            "Access-Control-Allow-Credentials": ALLOW_CREDENTIALS,
+            "Access-Control-Allow-Methods": ALLOWED_METHODS,
+            "Access-Control-Allow-Headers": ALLOWED_HEADERS,
+        }
+    return {}
 
 def get_search_client() -> SearchClient:
     global _search_client
@@ -118,9 +139,6 @@ def _join_docs_for_context(docs, per_doc_chars=1600, max_docs=10, max_context_ch
 # ---------------- Helpers: conversation & parsing ----------------
 
 def format_history_for_prompt_flow(conversation: List[Dict[str, str]]) -> List[Dict[str, Dict[str, str]]]:
-    """
-    Conversatie in PF-achtig formaat (zodat we bestaande formatting kunnen hergebruiken).
-    """
     chat_history = []
     for i in range(0, len(conversation), 2):
         if (
@@ -169,10 +187,6 @@ def embed_text(text: str) -> List[float]:
     return resp.data[0].embedding
 
 def _expand_queries(user_q: str, mode: str, doc_hint: str = "") -> List[str]:
-    """
-    PF-achtige query-expansie: voeg high-yield termen toe zodat bedragen, looptijden,
-    KO’s en standaarden sneller gevonden worden.
-    """
     base = (user_q or "").strip()
     mode = (mode or "").upper()
     hint = (doc_hint or "")[:300]
@@ -214,10 +228,6 @@ def _expand_queries(user_q: str, mode: str, doc_hint: str = "") -> List[str]:
     return out
 
 def hybrid_search_multi(queries: List[str], top_k: int = TOP_K) -> List[Dict[str, Any]]:
-    """
-    Voert hybride search uit voor meerdere query-varianten en merge't de resultaten.
-    Emuleert PF's 'modify_query_with_history' + 'lookup(top_k)' gedrag.
-    """
     sc = get_search_client()
     all_hits: Dict[str, Dict[str, Any]] = {}
 
@@ -244,13 +254,9 @@ def hybrid_search_multi(queries: List[str], top_k: int = TOP_K) -> List[Dict[str
                 all_hits[k] = hit
 
     merged = list(all_hits.values())
-    # cap op ~2*top_k zodat context niet explodeert
     return merged[: (top_k * 2)]
 
 def build_context(docs: List[Dict[str, Any]]) -> str:
-    """
-    (Niet meer gebruikt in de handler; behouden voor compat.)
-    """
     blocks = []
     for d in docs:
         src = d.get("source") or ""
@@ -262,9 +268,6 @@ def build_context(docs: List[Dict[str, Any]]) -> str:
 # ---------------- Prompt rendering ----------------
 
 def detect_mode(explicit_mode: str, chat_input: str) -> str:
-    """
-    Neem expliciete mode over; anders heuristisch uit vraag.
-    """
     m = (explicit_mode or "").strip().upper()
     if m in ("QUICKSCAN", "REVIEW", "DRAFT"):
         return m
@@ -276,17 +279,12 @@ def detect_mode(explicit_mode: str, chat_input: str) -> str:
     return "DRAFT"
 
 def render_system_and_user(mode: str, document_text: str, context_text: str, chat_history_pf: List[Dict[str, Any]], chat_input: str):
-    """
-    Render system+user rollen voor Chat API op basis van gevraagde mode.
-    """
-    # Chat history in plain tekst (zoals je PF deed)
     hist_lines = []
     for item in chat_history_pf:
         hist_lines.append("user:\n" + (item["inputs"].get("chat_input") or ""))
         hist_lines.append("assistant:\n" + (item["outputs"].get("chat_output") or ""))
     history_block = "\n".join(hist_lines)
 
-    # Gemeenschappelijk blok
     common_suffix = f"""
 context: {context_text}
 
@@ -509,7 +507,7 @@ Voor elk subcriterium (of thema) volg dit patroon:
 - **Bewijs** – referentie/type bewijs uit CONTEXT (link/naam indien aanwezig)
 
 ## Planning & mijlpalen
-- Tabel met fasen, deliverables, afhankelijkheden en mijlpaaldata (indien bekend; anders “Niet gespecificeerd in stukken”).
+- Tabel met fasen, deliverables, afhankelijkheden en mijlpalen (indien bekend; anders “Niet gespecificeerd in stukken”).
 
 ## Rollen & RACI (compact)
 - Tabel: Activiteit × (R/A/C/I) voor kernrollen (Projectmanager, Solution Architect, Integratie, Security/Privacy, Adoptie/Change, Beheer/SLA).
@@ -538,7 +536,7 @@ Voor elk subcriterium (of thema) volg dit patroon:
 def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     """
     Robuuste AOAI call:
-    - mode-aware max_completion_tokens (QUICKSCAN/DRAFT groter)
+    - mode-aware max_completion_tokens (kleiner om length-issues te vermijden)
     - geen tool_choice/response_format
     - ondersteunt text of list-of-parts
     - retries: ruimer budget, daarna compacte fallback
@@ -547,32 +545,40 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     client = get_aoai_client()
 
     def _extract(choice) -> str:
-        if not choice:
-            return ""
-        msg = getattr(choice, "message", None)
-        if msg is None:
-            con = getattr(choice, "content", None)
-            return con.strip() if isinstance(con, str) else ""
-        con = getattr(msg, "content", None)
-        if isinstance(con, str) and con.strip():
-            return con.strip()
-        if isinstance(con, list):
-            parts = []
-            for p in con:
-                try:
-                    if isinstance(p, dict):
-                        if p.get("type") in ("text", "output_text") and isinstance(p.get("text"), str):
-                            parts.append(p["text"])
-                    else:
-                        if getattr(p, "type", None) in ("text", "output_text") and isinstance(getattr(p, "text", None), str):
-                            parts.append(getattr(p, "text"))
-                except Exception:
-                    pass
-            if parts:
-                return "\n".join(x for x in parts if x and x.strip())
-        ref = getattr(msg, "refusal", None)
-        if isinstance(ref, str) and ref.strip():
-            return ref.strip()
+        try:
+            if not choice:
+                return ""
+            txt = getattr(choice, "text", None)
+            if isinstance(txt, str) and txt.strip():
+                return txt.strip()
+            cont = getattr(choice, "content", None)
+            if isinstance(cont, str) and cont.strip():
+                return cont.strip()
+            msg = getattr(choice, "message", None)
+            if msg is None:
+                return ""
+            con = getattr(msg, "content", None)
+            if isinstance(con, str) and con.strip():
+                return con.strip()
+            if isinstance(con, list):
+                parts = []
+                for p in con:
+                    try:
+                        if isinstance(p, dict):
+                            if p.get("type") in ("text", "output_text") and isinstance(p.get("text"), str):
+                                parts.append(p["text"])
+                        else:
+                            if getattr(p, "type", None) in ("text", "output_text") and isinstance(getattr(p, "text", None), str):
+                                parts.append(getattr(p, "text"))
+                    except Exception:
+                        pass
+                if parts:
+                    return "\n".join(x for x in parts if x and x.strip())
+            ref = getattr(msg, "refusal", None)
+            if isinstance(ref, str) and ref.strip():
+                return ref.strip()
+        except Exception:
+            pass
         return ""
 
     # Mode-aware budgets
@@ -581,14 +587,14 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         max_out_1, max_out_2 = 5200, 7200
     elif mode == "DRAFT":
         max_out_1, max_out_2 = 4800, 6800
-    else:  # REVIEW of onbekend
+    else:
         max_out_1, max_out_2 = 3000, 4800
 
     def _call(messages, max_out):
         return client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
             messages=messages,
-            temperature=1,
+            temperature=1,            # blijft 1
             max_completion_tokens=max_out,
         )
 
@@ -614,7 +620,7 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     if text and text.strip():
         return text.strip()
 
-    # Try 2: groter budget of expliciete platte-tekst instructie
+    # Try 2: iets ruimer budget + platte-tekst instructie
     retry_msgs = [
         {"role": "system", "content": system_text},
         {"role": "user",   "content": user_text + "\n\nGeef het volledige antwoord als platte tekst in het Nederlands (geen tools/afbeeldingen/code)."}
@@ -640,7 +646,7 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         {"role": "system", "content": system_text},
         {"role": "user",   "content": user_text + "\n\nANTWOORD BEPERKT: Geef een compacte versie (max. ~600 woorden), alleen hoofdlijnen & tabellen, platte tekst."}
     ]
-    resp3 = _call(compact_msgs, 1800)
+    resp3 = _call(compact_msgs, 1200)
     choice3 = resp3.choices[0] if getattr(resp3, "choices", None) else None
     text3 = _extract(choice3) if choice3 else ""
 
@@ -654,8 +660,15 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
 @app.route(route="TalkToTenderBot")
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
+        # === CORS: preflight ===
+        if req.method == "OPTIONS":
+            return func.HttpResponse(status_code=204, headers=_cors_headers(req))
+
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.26", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot vA.28",
+                                     status_code=200,
+                                     mimetype="text/plain",
+                                     headers=_cors_headers(req))
 
         # Logging intake
         try:
@@ -679,7 +692,10 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             try:
                 dec = MultipartDecoder(body_bytes, content_type)
             except Exception:
-                return func.HttpResponse("Ongeldig multipart-verzoek (decode fout).", status_code=400, mimetype="text/plain")
+                return func.HttpResponse("Ongeldig multipart-verzoek (decode fout).",
+                                         status_code=400,
+                                         mimetype="text/plain",
+                                         headers=_cors_headers(req))
 
             text_fields = {}
             file_part = None
@@ -717,17 +733,28 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                     elif ("wordprocessingml" in file_mt) or (ext == ".docx") or (file_mt == "application/octet-stream" and ext == ".docx"):
                         document_text = _read_docx_text(file_bytes)
                     else:
-                        return func.HttpResponse("Bestandstype niet ondersteund. Upload een PDF of DOCX.", status_code=415, mimetype="text/plain")
+                        return func.HttpResponse("Bestandstype niet ondersteund. Upload een PDF of DOCX.",
+                                                 status_code=415,
+                                                 mimetype="text/plain",
+                                                 headers=_cors_headers(req))
                 except zipfile.BadZipFile:
                     sig = _hex_prefix(file_bytes)
                     return func.HttpResponse(
                         f"Kon DOCX niet lezen: bestand lijkt geen geldig DOCX/ZIP (magic={sig}). "
                         "Controleer IRM/wachtwoord-beveiliging of sla opnieuw op als .docx.",
-                        status_code=422, mimetype="text/plain")
+                        status_code=422,
+                        mimetype="text/plain",
+                        headers=_cors_headers(req))
                 except PackageNotFoundError:
-                    return func.HttpResponse("Kon DOCX niet openen (geen geldig Office-package). Sla opnieuw op als .docx en probeer opnieuw.", status_code=422, mimetype="text/plain")
+                    return func.HttpResponse("Kon DOCX niet openen (geen geldig Office-package). Sla opnieuw op als .docx en probeer opnieuw.",
+                                             status_code=422,
+                                             mimetype="text/plain",
+                                             headers=_cors_headers(req))
                 except Exception as e:
-                    return func.HttpResponse(f"Fout bij lezen van document: {repr(e)}", status_code=422, mimetype="text/plain")
+                    return func.HttpResponse(f"Fout bij lezen van document: {repr(e)}",
+                                             status_code=422,
+                                             mimetype="text/plain",
+                                             headers=_cors_headers(req))
 
         elif "application/json" in content_type:
             body = {}
@@ -747,7 +774,9 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
         else:
             return func.HttpResponse(
                 f"Content-Type '{content_type}' niet ondersteund (verwacht JSON of multipart/form-data).",
-                status_code=415, mimetype="text/plain"
+                status_code=415,
+                mimetype="text/plain",
+                headers=_cors_headers(req)
             )
 
         # ---- Mode bepalen ----
@@ -762,15 +791,16 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             logging.exception(f"Search error: {e}")
             docs = []
 
+        # Compacte context
         context_text = _join_docs_for_context(
             docs,
-            per_doc_chars=1600,
-            max_docs=MAX_CONTEXT_DOCS,
-            max_context_chars=16000
+            per_doc_chars=900,
+            max_docs=5,
+            max_context_chars=7000
         )
 
-        # Trim raw inputs to avoid blowing the context window
-        document_text = _clip(document_text, 40000)
+        # Trim raw inputs
+        document_text = _clip(document_text, 12000)
         if isinstance(conversation, list) and len(conversation) > 8:
             conversation = conversation[-8:]
 
@@ -791,15 +821,19 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             chat_output = call_chat(system_text, user_text, mode_hint=mode_final)
         except Exception as e:
             logging.exception(f"AOAI chat error: {e}")
-            return func.HttpResponse(f"AI-dienst error: {repr(e)}", status_code=502, mimetype="text/plain")
+            return func.HttpResponse(f"AI-dienst error: {repr(e)}",
+                                     status_code=502,
+                                     mimetype="text/plain",
+                                     headers=_cors_headers(req))
 
         return func.HttpResponse(
             body=json.dumps({"chat_output": chat_output}),
             status_code=200,
-            mimetype="application/json"
+            mimetype="application/json",
+            headers=_cors_headers(req)
         )
 
     except Exception as e:
         logging.error("UNHANDLED", exc_info=True)
         body_text = f"Unhandled server error: {repr(e)}\n{traceback.format_exc()}"
-        return func.HttpResponse(body_text, status_code=500, mimetype="text/plain")
+        return func.HttpResponse(body_text, status_code=500, mimetype="text/plain", headers=_cors_headers(req))
