@@ -41,7 +41,7 @@ AZURE_SEARCH_INDEX   = os.environ.get("AZURE_SEARCH_INDEX", "sharepoint-vectoriz
 # Vector veld & semantic config zoals in jouw index
 TEXT_VECTOR_FIELD = "text_vector"
 SEMANTIC_CONFIG   = "sharepoint-vectorizer-semantic-configuration"
-TOP_K             = int(os.environ.get("TOP_K", "12"))
+TOP_K             = int(os.environ.get("TOP_K", "6"))
 
 # Azure OpenAI
 AOAI_ENDPOINT          = os.environ.get("AOAI_ENDPOINT", "").rstrip("/")
@@ -655,7 +655,7 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.25", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot vA.26", status_code=200, mimetype="text/plain")
 
         # Logging intake
         try:
