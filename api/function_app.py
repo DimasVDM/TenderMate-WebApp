@@ -1,6 +1,6 @@
-# function_app.py — Serverless PF-vervanger (hybride search + AOAI chat), vA.1
+# function_app.py — Serverless PF-vervanger (hybride search + AOAI chat)
 # - Ondersteunt PDF/DOCX uploads
-# - Hybride search tegen indexvelden: chunk/title/text_vector
+# - PF-achtige retrieval: multi-query expansie + hybride search + semantic rerank
 # - Semantic config: sharepoint-vectorizer-semantic-configuration
 # - Modes: QUICKSCAN / DRAFT / REVIEW (met fallback op vraag)
 
@@ -41,13 +41,16 @@ AZURE_SEARCH_INDEX   = os.environ.get("AZURE_SEARCH_INDEX", "sharepoint-vectoriz
 # Vector veld & semantic config zoals in jouw index
 TEXT_VECTOR_FIELD = "text_vector"
 SEMANTIC_CONFIG   = "sharepoint-vectorizer-semantic-configuration"
-TOP_K             = int(os.environ.get("TOP_K", "6"))
+TOP_K             = int(os.environ.get("TOP_K", "12"))
 
 # Azure OpenAI
 AOAI_ENDPOINT          = os.environ.get("AOAI_ENDPOINT", "").rstrip("/")
 AOAI_API_KEY           = os.environ.get("AOAI_API_KEY", "")
 AOAI_CHAT_DEPLOYMENT   = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5")  # pas aan naar jouw deploymentnaam
 AOAI_EMBED_DEPLOYMENT  = os.environ.get("AOAI_EMBED_DEPLOYMENT", "text-embedding-3-large")  # 3072-dim
+
+# Contextlimieten
+MAX_CONTEXT_DOCS   = int(os.environ.get("MAX_CONTEXT_DOCS", "10"))
 
 # ---------------------------------------------------
 
@@ -87,23 +90,30 @@ def _clip(txt: str, max_chars: int) -> str:
         return ""
     if len(txt) <= max_chars:
         return txt
-    # try to cut on a boundary
-    cut = txt[:max_chars]
-    # hard stop
-    return cut
+    return txt[:max_chars]
 
-def _join_docs_for_context(docs, per_doc_chars=2000, max_docs=6, max_context_chars=24000) -> str:
+def _dedupe_key(hit: Dict[str, Any]) -> str:
+    pid = (hit.get("parent_id") or "").strip()
+    src = (hit.get("source") or "").strip()
+    head = (hit.get("content") or "")[:80].strip()
+    return f"{pid}|{src}|{head}"
+
+def _join_docs_for_context(docs, per_doc_chars=1600, max_docs=10, max_context_chars=16000) -> str:
     blocks = []
+    total = 0
     for d in docs[:max_docs]:
         src = d.get("source") or ""
         pid = d.get("parent_id") or ""
         label = src if not pid else f"{src} (parent: {pid})"
-        content = _clip(d.get("content","") or "", per_doc_chars)
-        blocks.append(f"Content:\n{content}\nSource: {label}")
-        joined = "\n\n".join(blocks)
-        if len(joined) >= max_context_chars:
+        content = _clip((d.get("content","") or "").strip(), per_doc_chars)
+        if not content:
+            continue
+        block = f"Source: {label}\nContent:\n{content}"
+        if total + len(block) > max_context_chars:
             break
-    return "\n\n".join(blocks)
+        blocks.append(block)
+        total += len(block)
+    return "\n\n---\n\n".join(blocks)
 
 # ---------------- Helpers: conversation & parsing ----------------
 
@@ -158,36 +168,88 @@ def embed_text(text: str) -> List[float]:
     )
     return resp.data[0].embedding
 
-def hybrid_search(query_text: str, top_k: int = TOP_K) -> List[Dict[str, Any]]:
+def _expand_queries(user_q: str, mode: str, doc_hint: str = "") -> List[str]:
     """
-    Hybride search: keyword + vector (client-side embeddings), semantic rerank.
-    Veldmapping: content=chunk, source=title, vector=text_vector
+    PF-achtige query-expansie: voeg high-yield termen toe zodat bedragen, looptijden,
+    KO’s en standaarden sneller gevonden worden.
+    """
+    base = (user_q or "").strip()
+    mode = (mode or "").upper()
+    hint = (doc_hint or "")[:300]
+
+    keywords_common = [
+        "(prijs OR prijsplafond OR budget OR 'geraamde waarde' OR kosten)",
+        "(contractduur OR looptijd OR verlenging OR startdatum OR einddatum)",
+        "(weging OR beoordelingscriteria OR paginabudget OR demo OR PoC)",
+        "(referentie OR geschiktheid OR KO OR uitsluitingsgronden)",
+        "(GIBIT OR ARBIT OR ARVODI OR 'Verwerkersovereenkomst' OR AVG OR DPIA)",
+        "('TLS en HTTP response headers' OR TLS OR HSTS OR CSP)",
+        "(Common Ground OR ZGW OR STUF OR ZKN OR OData OR CSV OR 'Power BI')",
+        "('EN 301 549' OR WCAG OR toegankelijkheid OR B1 OR voorleesfunctie)",
+        "('Concern Informatie Architectuur' OR exitstrategie OR SLA OR support)",
+        "('Verklaring geen Russische betrokkenheid' OR 'Wachtkamerovereenkomst' OR Conceptovereenkomst)"
+    ]
+
+    mode_bonus = []
+    if mode == "QUICKSCAN":
+        mode_bonus = ["(go/no-go OR kwalificatie OR showstoppers OR risico’s)"]
+    elif mode == "REVIEW":
+        mode_bonus = ["(KPI OR SMART OR dekkingsmatrix OR 'boven verwachting')"]
+    else:  # DRAFT
+        mode_bonus = ["(structuur OR hoofdstukindeling OR 'paginabudget verdeling')"]
+
+    queries = [base] if base else []
+    core = " ".join(keywords_common + mode_bonus)
+    queries.append(f"{base} {core}".strip())
+    queries.append(f"{base} prijsplafond OR 'geraamde waarde' OR contractduur OR 2026 OR 2027 OR 2028")
+    if hint:
+        queries.append(f"{base} {hint}")
+
+    seen, out = set(), []
+    for q in queries:
+        qn = (q or "").strip()
+        if qn and qn not in seen:
+            out.append(qn)
+            seen.add(qn)
+    return out
+
+def hybrid_search_multi(queries: List[str], top_k: int = TOP_K) -> List[Dict[str, Any]]:
+    """
+    Voert hybride search uit voor meerdere query-varianten en merge't de resultaten.
+    Emuleert PF's 'modify_query_with_history' + 'lookup(top_k)' gedrag.
     """
     sc = get_search_client()
-    vec = embed_text(query_text)
-    vq = VectorizedQuery(vector=vec, k_nearest_neighbors=top_k, fields=TEXT_VECTOR_FIELD)
+    all_hits: Dict[str, Dict[str, Any]] = {}
 
-    results = sc.search(
-        search_text=query_text,
-        vector_queries=[vq],
-        top=top_k,
-        query_type=QueryType.SEMANTIC,
-        semantic_configuration_name=SEMANTIC_CONFIG
-    )
+    for q in queries:
+        vec = embed_text(q)
+        vq = VectorizedQuery(vector=vec, k_nearest_neighbors=top_k, fields=TEXT_VECTOR_FIELD)
+        results = sc.search(
+            search_text=q,
+            vector_queries=[vq],
+            top=top_k,
+            query_type=QueryType.SEMANTIC,
+            semantic_configuration_name=SEMANTIC_CONFIG,
+        )
+        for r in results:
+            hit = {
+                "content":   r.get("chunk", "") or "",
+                "source":    r.get("title", "") or "",
+                "parent_id": r.get("parent_id", "") or ""
+            }
+            if not hit["content"]:
+                continue
+            k = _dedupe_key(hit)
+            if k not in all_hits:
+                all_hits[k] = hit
 
-    items = []
-    for r in results:
-        # r is a SearchResult; dict-like access
-        items.append({
-            "content":   r.get("chunk", "") or "",
-            "source":    r.get("title", "") or "",
-            "parent_id": r.get("parent_id", "") or ""
-        })
-    return items
+    merged = list(all_hits.values())
+    # cap op ~2*top_k zodat context niet explodeert
+    return merged[: (top_k * 2)]
 
 def build_context(docs: List[Dict[str, Any]]) -> str:
     """
-    Bouw RAG-context: Content + Source (titel) + parent_id (optioneel).
+    (Niet meer gebruikt in de handler; behouden voor compat.)
     """
     blocks = []
     for d in docs:
@@ -216,7 +278,6 @@ def detect_mode(explicit_mode: str, chat_input: str) -> str:
 def render_system_and_user(mode: str, document_text: str, context_text: str, chat_history_pf: List[Dict[str, Any]], chat_input: str):
     """
     Render system+user rollen voor Chat API op basis van gevraagde mode.
-    Prompts zijn de (samengebalde) varianten die je hiervoor gebruikte.
     """
     # Chat history in plain tekst (zoals je PF deed)
     hist_lines = []
@@ -236,11 +297,8 @@ user:
 {chat_input}
 """.strip()
 
-    document_line = f"document_text: {document_text or ''}"
-
     if mode == "QUICKSCAN":
         system = (
-            # ——— SYSTEM ———
             "Je bent TenderMate, de elite AI-tenderanalist en strategisch bid-adviseur van IT-Workz.\n"
             "Werk in STRICT_FACT_MODE:\n"
             "- Gebruik alleen informatie uit 'document_text' en 'context'.\n"
@@ -291,6 +349,7 @@ Vat beknopt het “waarom” en de doelstellingen samen. Citeer 1–3 sleutelzin
 - **Uitsluitingsgronden / geschiktheidseisen**: ✅/❌ per onderdeel (referentiesector/omvang/complexiteit; technische/beroepsbekwaamheid).
 - **Normen/certificeringen** (ISO/ISAE/NEN/ENSIA, AVG/DPIA): 🟢 Aanwezig / 🔴 Ontbreekt.
 - **Juridische kaders**: benoem **GIBIT/ARBIT/ARVODI**, AVG/Verwerkersovereenkomst, DPIA, securitybeleid (TLS/HTTP headers).
+- **Match met IT-Workz Catalogus**: Benoem matches/gaten t.o.v. CONTEXT.
 - **Conclusie haalbaarheid (harde eisen)**: 1 alinea.
 
 ## Architectuur & Standaarden (overheidsspecifiek waar relevant)
@@ -307,17 +366,24 @@ Vat beknopt het “waarom” en de doelstellingen samen. Citeer 1–3 sleutelzin
 - **Planning/Migratie**
 Noteer opvallende punten en hiaten. Gebruik bullets.
 
+## Analyse van Vereiste Disciplines
+[ ] Lijst de belangrijkste uitvoeringsrollen o.b.v. CONTEXT (alleen relevante intern bekende rollen).
+[ ] Stel een voorlopig bid-team samen o.b.v. match met CONTEXT.
+
 ## Weging, paginabudget en planning
 - **Weging**: noteer percentages indien aanwezig; anders “Niet gespecificeerd in stukken”.
-- **Paginabudget**: noteer limiet. **Voorstel verdeling** per onderdeel in bullets (op basis van (verwachte) weging).
-- **Planning & deadlines**: lijst alle mijlpalen (vragenronde, indiening, demo/PoC, gunning, start).
+- **Paginabudget**: noteer limiet. **Voorstel verdeling** per onderdeel (o.b.v. weging).
+- **Planning & deadlines**: alle mijlpalen (vragenronde, indiening, demo/PoC, gunning, start).
 
 ## Budget en concurrentiepositie
 - **Budgetsignalen** (plafond/raming/prijsmechaniek).
 - **Concurrenten (indicatief)** en **positie IT-Workz** o.b.v. CONTEXT (sterktes/zwaktes kort).
 
 ## Showstoppers / risico’s (met mitigatie of verhelderingsvraag)
-- Maak een beknopte lijst met concrete eisen/risico’s + korte mitigatie/te-stellen vraag.
+- Korte lijst met concrete eisen/risico’s + korte mitigatie/te-stellen vraag.
+
+## Concurrentie-analyse
+- Benoem (indien mogelijk via CONTEXT) huidige dienstverlener/bekende concurrenten; sterke/zwakke punten.
 
 ## Referenties (advies)
 - Adviseer 2–3 **typen** referenties (branche/omvang/complexiteit) en **waarom** deze scoren. Koppel aan CONTEXT.
@@ -370,7 +436,9 @@ Houd je aan STRICT_FACT_MODE en volg **deze koppen exact**:
 - Conclusie haalbaarheid + expliciete hiaten.
 
 ## Architectuur & standaarden (waar relevant)
-- Common Ground / ZGW-/STUF(-ZKN) / OData.\n- Microsoft-integraties (Azure AD, Graph, SharePoint/Teams, Power BI).\n- Toegankelijkheid **WCAG/EN 301 549**.  
+- Common Ground / ZGW-/STUF(-ZKN) / OData.
+- Microsoft-integraties (Azure AD, Graph, SharePoint/Teams, Power BI).
+- Toegankelijkheid **WCAG/EN 301 549**.  
 Noteer wat ontbreekt en wat explicieter moet.
 
 ## KPI-audit (SMART)
@@ -435,7 +503,7 @@ Houd je aan STRICT_FACT_MODE en volg **deze koppen exact**:
 Voor elk subcriterium (of thema) volg dit patroon:
 - **Wat wordt gevraagd (quote/para-phrase)**  
 - **Onze aanpak** (proces/stappen, verantwoordelijkheden)  
-- **Architectuur & integraties** (Azure AD/SSO/MFA, Graph, SharePoint/Teams, Power BI, Common Ground/ZGW/STUF/ OData/ WCAG/EN 301 549 waar relevant)  
+- **Architectuur & integraties** (Azure AD/SSO/MFA, Graph, SharePoint/Teams, Power BI, Common Ground/ZGW/STUF/OData/WCAG/EN 301 549 waar relevant)  
 - **KPI’s (SMART)** – inclusief meetmethode, norm, frequentie, eigenaar  
 - **Risico’s & mitigatie** – 1–2 concreet  
 - **Bewijs** – referentie/type bewijs uit CONTEXT (link/naam indien aanwezig)
@@ -469,16 +537,18 @@ Voor elk subcriterium (of thema) volg dit patroon:
 
 def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     """
-    Robust AOAI call:
-    - mode-aware max_completion_tokens (QUICKSCAN/DRAFT need more)
-    - no tool_choice / no response_format
-    - handles text or list-of-parts content
-    - retries on empty/length with bigger budget, then compact output
-    - logs token usage & finish_reason
+    Robuuste AOAI call:
+    - mode-aware max_completion_tokens (QUICKSCAN/DRAFT groter)
+    - geen tool_choice/response_format
+    - ondersteunt text of list-of-parts
+    - retries: ruimer budget, daarna compacte fallback
+    - logt token usage & finish_reason
     """
     client = get_aoai_client()
 
     def _extract(choice) -> str:
+        if not choice:
+            return ""
         msg = getattr(choice, "message", None)
         if msg is None:
             con = getattr(choice, "content", None)
@@ -511,7 +581,7 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         max_out_1, max_out_2 = 5200, 7200
     elif mode == "DRAFT":
         max_out_1, max_out_2 = 4800, 6800
-    else:  # REVIEW or unknown
+    else:  # REVIEW of onbekend
         max_out_1, max_out_2 = 3000, 4800
 
     def _call(messages, max_out):
@@ -544,7 +614,7 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     if text and text.strip():
         return text.strip()
 
-    # Try 2: bigger budget OR explicitly ask for plain text if length/empty
+    # Try 2: groter budget of expliciete platte-tekst instructie
     retry_msgs = [
         {"role": "system", "content": system_text},
         {"role": "user",   "content": user_text + "\n\nGeef het volledige antwoord als platte tekst in het Nederlands (geen tools/afbeeldingen/code)."}
@@ -565,10 +635,10 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     if text2 and text2.strip():
         return text2.strip()
 
-    # Try 3: compact answer (so the user still gets something)
+    # Try 3: compacte fallback
     compact_msgs = [
         {"role": "system", "content": system_text},
-        {"role": "user",   "content": user_text + "\n\nANTWOORD BEPERKT: Geef een compacte versie (max. ~600 woorden), alleen de hoofdlijnen en tabellen, platte tekst."}
+        {"role": "user",   "content": user_text + "\n\nANTWOORD BEPERKT: Geef een compacte versie (max. ~600 woorden), alleen hoofdlijnen & tabellen, platte tekst."}
     ]
     resp3 = _call(compact_msgs, 1800)
     choice3 = resp3.choices[0] if getattr(resp3, "choices", None) else None
@@ -579,14 +649,13 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
 
     return "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of verlaag de omvang (minder context of kortere vraag)."
 
-
 # ---------------- HTTP Function ----------------
 
 @app.route(route="TalkToTenderBot")
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.21", status_code=200, mimetype="text/plain")
+            return func.HttpResponse("OK - TalkToTenderBot vA.25", status_code=200, mimetype="text/plain")
 
         # Logging intake
         try:
@@ -649,7 +718,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                         document_text = _read_docx_text(file_bytes)
                     else:
                         return func.HttpResponse("Bestandstype niet ondersteund. Upload een PDF of DOCX.", status_code=415, mimetype="text/plain")
-                except zipfile.BadZipFile as e:
+                except zipfile.BadZipFile:
                     sig = _hex_prefix(file_bytes)
                     return func.HttpResponse(
                         f"Kon DOCX niet lezen: bestand lijkt geen geldig DOCX/ZIP (magic={sig}). "
@@ -684,18 +753,21 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
         # ---- Mode bepalen ----
         mode_final = detect_mode(mode, question)
 
-        # ---- Zoek context in Azure AI Search ----
-        # Gebruik de vraag + (optioneel) een hint uit document_text voor betere RAG
-        search_query = question or (document_text[:300] if document_text else "aanbesteding onderwijs")
+        # ---- Zoek context in Azure AI Search (PF-achtig) ----
+        queries = _expand_queries(question, mode_final, document_text)
         docs = []
         try:
-            docs = hybrid_search(search_query, top_k=TOP_K)
+            docs = hybrid_search_multi(queries, top_k=TOP_K)
         except Exception as e:
             logging.exception(f"Search error: {e}")
-            # We gaan door zonder RAG-context
             docs = []
 
-        context_text = _join_docs_for_context(docs, per_doc_chars=1800, max_docs=5, max_context_chars=18000)
+        context_text = _join_docs_for_context(
+            docs,
+            per_doc_chars=1600,
+            max_docs=MAX_CONTEXT_DOCS,
+            max_context_chars=16000
+        )
 
         # Trim raw inputs to avoid blowing the context window
         document_text = _clip(document_text, 40000)
