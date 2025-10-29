@@ -702,7 +702,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(status_code=204, headers=_cors_headers(req))
 
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.30",
+            return func.HttpResponse("OK - TalkToTenderBot vA.31",
                                      status_code=200,
                                      mimetype="text/plain",
                                      headers=_cors_headers(req))

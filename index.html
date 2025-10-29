@@ -12,6 +12,8 @@
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <!-- ADD: DOMPurify for safe HTML sanitization -->
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.9/dist/purify.min.js"></script>
 
   <style>
     :root{
@@ -337,7 +339,7 @@
 
     let conversation = [];
     let selectedFile = null;
-    let currentMode  = null; // "QUICKSCAN" | "DRAFT" | "REVIEW"
+    let currentMode  = null; // "QUICKSCAN" | "DRAFT" | "REVIEW" | "INFO"
 
     // ====== Auth chip ======
     const userInitialsEl=document.getElementById('user-initials');
@@ -468,7 +470,6 @@ Klaar? Kies een modus of typ je vraag hieronder. Veel succes!
         mode==='DRAFT'     ? 'Opzet schrijven starten' :
                              'Review starten';
 
-      // inhoud
       if(mode==='QUICKSCAN'){
         modalBody.innerHTML = `
           <label>Dossier-/mapnaam (SharePoint)
@@ -510,7 +511,6 @@ Klaar? Kies een modus of typ je vraag hieronder. Veel succes!
     modalOverlay.addEventListener('click',(e)=>{ if(e.target===modalOverlay) closeModeModal(); });
 
     modalStart.addEventListener('click',()=>{
-      // bouw een nette user prompt en zet die in het tekstveld (zodat gebruiker het ook ziet)
       let prompt='';
       if(currentMode==='QUICKSCAN'){
         const map = document.getElementById('f-map')?.value?.trim() || '';
@@ -526,7 +526,7 @@ Klaar? Kies een modus of typ je vraag hieronder. Veel succes!
         prompt = `Beoordeel en verbeter mijn tekst.${topic?` Focus: ${topic}.`:''}${notes?`\nAandachtspunten: ${notes}`:''}`;
       }
       messageInput.value = prompt;
-      messageInput.dispatchEvent(new Event('input')); // activeer send-knop styling
+      messageInput.dispatchEvent(new Event('input'));
       closeModeModal();
       messageInput.focus();
     });
@@ -600,6 +600,7 @@ Klaar? Kies een modus of typ je vraag hieronder. Veel succes!
       }
     });
 
+    // Intent-afleiding (matching met backend detectie)
     function inferModeFromText(t=''){
       const s = t.toLowerCase().trim();
       const tenderish = /(aanbested|quickscan|gunnings|pve|programma van eisen|arbit|gibit|arvodi|uea|offerte|score|referentie|paginabudget|kpi)/.test(s);
@@ -610,6 +611,7 @@ Klaar? Kies een modus of typ je vraag hieronder. Veel succes!
       return tenderish ? 'DRAFT' : 'INFO';
     }
 
+    // Veilig renderen van bot-antwoorden
     function addMessage(message,className){
       const el=document.createElement('div');
       el.className=className;
@@ -618,7 +620,7 @@ Klaar? Kies een modus of typ je vraag hieronder. Veel succes!
         const codeBlock = /^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/;
         const match = m.match(codeBlock); if (match) m = match[1];
         const html = marked.parse(m, { breaks:true });
-        el.innerHTML = DOMPurify.sanitize(html);
+        el.innerHTML = (window.DOMPurify ? DOMPurify.sanitize(html) : html);
         el.querySelectorAll('pre > code').forEach(block => hljs.highlightElement(block));
       }else{
         el.textContent=message;
