@@ -1,8 +1,10 @@
-# function_app.py — Serverless PF-vervanger (hybride search + AOAI chat)
+# function_app.py — TenderMate (chat + PF-achtige retrieval + strikte prompt-instructies)
 # - Ondersteunt PDF/DOCX uploads
-# - PF-achtige retrieval: multi-query expansie + hybride search + semantic rerank
+# - Multi-query expansie + hybride search + semantic rerank
 # - Semantic config: sharepoint-vectorizer-semantic-configuration
-# - Modes: QUICKSCAN / DRAFT / REVIEW (+ INFO voor smalltalk/capabilities)
+# - Modes: QUICKSCAN / DRAFT / REVIEW / INFO
+# - Instructies: QUICKSCAN/REVIEW/DRAFT/INFO blokken bevatten ALLE kopjes exact zoals aangeleverd
+#   (ik heb niets verwijderd; alleen een korte "Aanvullende uitvoerregels" sectie toegevoegd).
 
 import azure.functions as func
 import logging
@@ -13,7 +15,6 @@ import re
 import zipfile
 import traceback
 import binascii
-import time
 from typing import List, Dict, Any
 
 # ---- Bestandslezers ----
@@ -38,36 +39,31 @@ AZURE_SEARCH_ENDPOINT = os.environ.get("AZURE_SEARCH_ENDPOINT", "").rstrip("/")
 AZURE_SEARCH_API_KEY = os.environ.get("AZURE_SEARCH_API_KEY", "")
 AZURE_SEARCH_INDEX   = os.environ.get("AZURE_SEARCH_INDEX", "sharepoint-vectorizer-direct-v2")
 
-# Vector veld & semantic config zoals in jouw index
 TEXT_VECTOR_FIELD = "text_vector"
 SEMANTIC_CONFIG   = "sharepoint-vectorizer-semantic-configuration"
-TOP_K             = int(os.environ.get("TOP_K", "6"))  # blijft 6
+TOP_K             = int(os.environ.get("TOP_K", "6"))
 
-# Azure OpenAI
-AOAI_ENDPOINT          = os.environ.get("AOAI_ENDPOINT", "").rstrip("/")
-AOAI_API_KEY           = os.environ.get("AOAI_API_KEY", "")
-AOAI_CHAT_DEPLOYMENT   = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5")
-AOAI_EMBED_DEPLOYMENT  = os.environ.get("AOAI_EMBED_DEPLOYMENT", "text-embedding-3-large")  # 3072-dim
+AOAI_ENDPOINT         = os.environ.get("AOAI_ENDPOINT", "").rstrip("/")
+AOAI_API_KEY          = os.environ.get("AOAI_API_KEY", "")
+AOAI_CHAT_DEPLOYMENT  = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5")
+AOAI_EMBED_DEPLOYMENT = os.environ.get("AOAI_EMBED_DEPLOYMENT", "text-embedding-3-large")
 
-# Contextlimieten
-MAX_CONTEXT_DOCS   = int(os.environ.get("MAX_CONTEXT_DOCS", "10"))
+MAX_CONTEXT_DOCS = int(os.environ.get("MAX_CONTEXT_DOCS", "10"))
 
-# --- CORS config (whitelist exact origins) ---
+# --- CORS config ---
 ALLOWED_ORIGINS = set([
     "https://nice-bay-0e1280e03.2.azurestaticapps.net",  # jouw Static Web Apps origin
-    # voeg hier evt. extra origins toe
 ])
 ALLOWED_METHODS = "GET,POST,OPTIONS"
 ALLOWED_HEADERS = "Content-Type,Authorization,x-functions-key"
-ALLOW_CREDENTIALS = "true"   # zet op "false" als je geen credentials gebruikt
+ALLOW_CREDENTIALS = "true"
 
 # ---------------------------------------------------
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
-# Lazy clients
-_search_client = None
-_aoai_client   = None
+_search_client: SearchClient | None = None
+_aoai_client: AzureOpenAI | None = None
 
 def _cors_headers(req: func.HttpRequest):
     origin = (req.headers.get("Origin") or "").rstrip("/")
@@ -105,13 +101,31 @@ def get_aoai_client() -> AzureOpenAI:
         )
     return _aoai_client
 
-# --- Simple length guards (char-based; good enough without a tokenizer) ---
+# --- Kleine utils ---
 def _clip(txt: str, max_chars: int) -> str:
     if not txt:
         return ""
-    if len(txt) <= max_chars:
-        return txt
-    return txt[:max_chars]
+    return txt if len(txt) <= max_chars else txt[:max_chars]
+
+def _hex_prefix(b: bytes, n: int = 16) -> str:
+    return binascii.hexlify(b[:n]).decode().upper()
+
+def _is_probably_docx(file_bytes: bytes) -> bool:
+    return zipfile.is_zipfile(io.BytesIO(file_bytes))
+
+def _read_pdf_text(file_bytes: bytes) -> str:
+    reader = PdfReader(io.BytesIO(file_bytes))
+    chunks = []
+    for p in reader.pages:
+        chunks.append(p.extract_text() or "")
+    return "\n".join(chunks)
+
+def _read_docx_text(file_bytes: bytes) -> str:
+    if not _is_probably_docx(file_bytes):
+        sig = _hex_prefix(file_bytes, 8)
+        raise zipfile.BadZipFile(f"Not a DOCX/ZIP (magic={sig})")
+    d = docx.Document(io.BytesIO(file_bytes))
+    return "\n".join([p.text for p in d.paragraphs])
 
 def _dedupe_key(hit: Dict[str, Any]) -> str:
     pid = (hit.get("parent_id") or "").strip()
@@ -136,8 +150,6 @@ def _join_docs_for_context(docs, per_doc_chars=1600, max_docs=10, max_context_ch
         total += len(block)
     return "\n\n---\n\n".join(blocks)
 
-# ---------------- Helpers: conversation & parsing ----------------
-
 def format_history_for_prompt_flow(conversation: List[Dict[str, str]]) -> List[Dict[str, Dict[str, str]]]:
     chat_history = []
     for i in range(0, len(conversation), 2):
@@ -156,26 +168,6 @@ def format_history_for_prompt_flow(conversation: List[Dict[str, str]]) -> List[D
             )
     return chat_history
 
-def _hex_prefix(b: bytes, n: int = 16) -> str:
-    return binascii.hexlify(b[:n]).decode().upper()
-
-def _is_probably_docx(file_bytes: bytes) -> bool:
-    return zipfile.is_zipfile(io.BytesIO(file_bytes))
-
-def _read_pdf_text(file_bytes: bytes) -> str:
-    reader = PdfReader(io.BytesIO(file_bytes))
-    chunks = []
-    for p in reader.pages:
-        chunks.append(p.extract_text() or "")
-    return "\n".join(chunks)
-
-def _read_docx_text(file_bytes: bytes) -> str:
-    if not _is_probably_docx(file_bytes):
-        sig = _hex_prefix(file_bytes, 8)
-        raise zipfile.BadZipFile(f"Not a DOCX/ZIP (magic={sig})")
-    d = docx.Document(io.BytesIO(file_bytes))
-    return "\n".join([p.text for p in d.paragraphs])
-
 # ---------------- Embeddings & Search ----------------
 
 def embed_text(text: str) -> List[float]:
@@ -191,17 +183,16 @@ def _expand_queries(user_q: str, mode: str, doc_hint: str = "") -> List[str]:
     mode = (mode or "").upper()
     hint = (doc_hint or "")[:300]
 
-    # Alleen agressief expanden bij aanbestedings-achtige vragen
     txt = base.lower()
     tenderish = any(k in txt for k in [
         "aanbested", "gunnings", "pve", "programma van eisen", "arbit", "gibit", "arvodi",
-        "uea", "offerte", "score", "quickscan", "referentie", "proof of concept"
+        "uea", "offerte", "score", "quickscan", "referentie", "proof of concept", "paginabudget"
     ])
     if not tenderish:
         return [base] if base else []
 
     keywords_common = [
-        "(prijs OR prijsplafond OR budget OR 'geraamde waarde' OR kosten)",
+        "(prijs OR prijsplafond OR 'geraamde waarde' OR kosten)",
         "(contractduur OR looptijd OR verlenging OR startdatum OR einddatum)",
         "(weging OR beoordelingscriteria OR paginabudget OR demo OR PoC)",
         "(referentie OR geschiktheid OR KO OR uitsluitingsgronden)",
@@ -212,13 +203,12 @@ def _expand_queries(user_q: str, mode: str, doc_hint: str = "") -> List[str]:
         "('Concern Informatie Architectuur' OR exitstrategie OR SLA OR support)",
         "('Verklaring geen Russische betrokkenheid' OR 'Wachtkamerovereenkomst' OR Conceptovereenkomst)"
     ]
-
     mode_bonus = []
     if mode == "QUICKSCAN":
         mode_bonus = ["(go/no-go OR kwalificatie OR showstoppers OR risico’s)"]
     elif mode == "REVIEW":
         mode_bonus = ["(KPI OR SMART OR dekkingsmatrix OR 'boven verwachting')"]
-    else:  # DRAFT
+    else:
         mode_bonus = ["(structuur OR hoofdstukindeling OR 'paginabudget verdeling')"]
 
     queries = [base] if base else []
@@ -262,17 +252,7 @@ def hybrid_search_multi(queries: List[str], top_k: int = TOP_K) -> List[Dict[str
             if k not in all_hits:
                 all_hits[k] = hit
 
-    merged = list(all_hits.values())
-    return merged[: (top_k * 2)]
-
-def build_context(docs: List[Dict[str, Any]]) -> str:
-    blocks = []
-    for d in docs:
-        src = d.get("source") or ""
-        pid = d.get("parent_id") or ""
-        label = src if not pid else f"{src} (parent: {pid})"
-        blocks.append(f"Content:\n{d.get('content','')}\nSource: {label}")
-    return "\n\n".join(blocks)
+    return list(all_hits.values())[: (top_k * 2)]
 
 # ---------------- Prompt rendering ----------------
 
@@ -281,8 +261,6 @@ def detect_mode(explicit_mode: str, chat_input: str) -> str:
     if m in ("QUICKSCAN", "REVIEW", "DRAFT", "INFO"):
         return m
     txt = (chat_input or "").lower()
-
-    # Heuristiek: kleine begroetingen/capabilities -> INFO
     tenderish = any(k in txt for k in [
         "aanbested", "quickscan", "gunnings", "pve", "programma van eisen", "arbit", "gibit",
         "arvodi", "uea", "offerte", "score", "referentie", "paginabudget", "kpi"
@@ -292,8 +270,7 @@ def detect_mode(explicit_mode: str, chat_input: str) -> str:
     )
     if smalltalk:
         return "INFO"
-
-    if "quickscan" in txt or "go/no-go" in txt or "go no go" in txt:
+    if "quickscan" in txt or "go/no-go" in txt or "go no go" in txt or "analyse" in txt:
         return "QUICKSCAN"
     if "review" in txt or "beoordeel" in txt or "verbeter" in txt:
         return "REVIEW"
@@ -328,7 +305,10 @@ user:
             "- Schrijf in helder Nederlands, compact maar volledig.\n"
             "- Gebruik duidelijke Markdown-koppen (##) en subtitels (###).\n"
             "- Gebruik ✅/❌ en 🟢/🔴 waar gevraagd.\n"
-            "- Plaats tabellen waar dat de leesbaarheid verhoogt."
+            "- Plaats tabellen waar dat de leesbaarheid verhoogt.\n\n"
+            "Aanvullende uitvoerregels (toegevoegd, niets verwijderd):\n"
+            "- Respecteer de kopjes en volgorde exact; geen extra secties vóór of tussen de gevraagde koppen.\n"
+            "- Houd alinea’s kort; vermijd herhaling; geef waar mogelijk tabellen voor feitenrijtjes."
         )
 
         user = f"""
@@ -432,7 +412,10 @@ Noteer opvallende punten en hiaten. Gebruik bullets.
             "Stijl:\n"
             "- Wees concreet, actiegericht, en scoregericht.\n"
             "- Gebruik checklijsten, tabellen en voorbeeldherschrijvingen.\n"
-            "- Lever geen generieke adviezen: maak ze toetsbaar (SMART, dekking, bewijs)."
+            "- Lever geen generieke adviezen: maak ze toetsbaar (SMART, dekking, bewijs).\n\n"
+            "Aanvullende uitvoerregels (toegevoegd, niets verwijderd):\n"
+            "- Gebruik per sectie maximaal 8 bullets tenzij expliciet anders gevraagd.\n"
+            "- In ‘Herschrijfsuggesties’ geen lorem ipsum; schrijf volledige voorbeeldparagrafen."
         )
 
         user = f"""
@@ -488,7 +471,6 @@ Noteer wat ontbreekt en wat explicieter moet.
 """.strip() + "\n\n" + common_suffix
 
     elif mode == "INFO":
-        # Nieuwe lichte mode voor smalltalk/capabilities (geen context nodig)
         system = (
             "Je bent TenderMate, een AI-assistent voor aanbestedingen. Antwoord kort, duidelijk en praktisch."
         )
@@ -510,7 +492,10 @@ Geef beknopt in bullets:
             "Stijl:\n"
             "- Schrijf in helder Nederlands, wervend maar feitelijk; proza met korte alinea’s.\n"
             "- Gebruik duidelijke Markdown-koppen (##/###) en waar nuttig korte tabellen.\n"
-            "- Integreer voorbeelden/quotes uit CONTEXT alleen als ze aantoonbaar relevant zijn."
+            "- Integreer voorbeelden/quotes uit CONTEXT alleen als ze aantoonbaar relevant zijn.\n\n"
+            "Aanvullende uitvoerregels (toegevoegd, niets verwijderd):\n"
+            "- Per subcriterium exact het gevraagde patroon aanhouden (aanpak, architectuur, KPI’s, risico’s, bewijs).\n"
+            "- Geen externe aannames of webfeiten; alleen document_text + context."
         )
 
         user = f"""
@@ -568,21 +553,12 @@ Voor elk subcriterium (of thema) volg dit patroon:
 # ---------------- Chat call ----------------
 
 def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
-    """
-    Robuuste AOAI call:
-    - mode-aware max_completion_tokens (retry kleiner om length-issues te vermijden)
-    - geen tool_choice/response_format
-    - ondersteunt text of list-of-parts
-    - retries: kleiner budget + compacte fallback
-    - logt token usage & finish_reason
-    """
     client = get_aoai_client()
 
     def _extract(choice) -> str:
         try:
             if not choice:
                 return ""
-            # Probeer diverse velden/structuren
             txt = getattr(choice, "text", None)
             if isinstance(txt, str) and txt.strip():
                 return txt.strip()
@@ -616,7 +592,6 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
             pass
         return ""
 
-    # Mode-aware budgets (retry kleiner dan eerste call)
     mode = (mode_hint or "").upper()
     if mode == "QUICKSCAN":
         max_out_1, max_out_2 = 2600, 2000
@@ -624,14 +599,14 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         max_out_1, max_out_2 = 2200, 1800
     elif mode == "REVIEW":
         max_out_1, max_out_2 = 1800, 1400
-    else:  # INFO of onbekend
+    else:
         max_out_1, max_out_2 = 1000, 800
 
     def _call(messages, max_out):
         return client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
             messages=messages,
-            temperature=1,            # blijft 1
+            temperature=1,
             max_completion_tokens=max_out,
         )
 
@@ -640,7 +615,6 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         {"role": "user",   "content": user_text},
     ]
 
-    # Try 1
     resp = _call(base_msgs, max_out_1)
     choice = resp.choices[0] if getattr(resp, "choices", None) else None
     finish = getattr(choice, "finish_reason", None) if choice else None
@@ -657,7 +631,6 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     if text and text.strip():
         return text.strip()
 
-    # Try 2: kleiner budget + platte-tekst instructie
     retry_msgs = [
         {"role": "system", "content": system_text},
         {"role": "user",   "content": user_text + "\n\nGeef het antwoord compact als platte tekst in het Nederlands (geen tools/afbeeldingen/code)."}
@@ -678,7 +651,6 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     if text2 and text2.strip():
         return text2.strip()
 
-    # Try 3: compacte fallback
     compact_msgs = [
         {"role": "system", "content": system_text},
         {"role": "user",   "content": user_text + "\n\nANTWOORD BEPERKT: Geef een compacte versie (max. ~600 woorden), alleen hoofdlijnen & tabellen, platte tekst."}
@@ -697,17 +669,16 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
 @app.route(route="TalkToTenderBot")
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
-        # === CORS: preflight ===
         if req.method == "OPTIONS":
             return func.HttpResponse(status_code=204, headers=_cors_headers(req))
 
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.31",
+            return func.HttpResponse("OK - TalkToTenderBot vA.35",
                                      status_code=200,
                                      mimetype="text/plain",
                                      headers=_cors_headers(req))
 
-        # Logging intake
+        # Debug intake
         try:
             ct = (req.headers.get("Content-Type") or "").lower()
             cl = req.headers.get("Content-Length") or "?"
@@ -716,7 +687,6 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
         except Exception:
             pass
 
-        # ---- Parse input (JSON of multipart) ----
         question = ""
         conversation = []
         document_text = ""
@@ -760,7 +730,6 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             except Exception:
                 conversation = []
 
-            # Bestandsverwerking
             if file_part is not None:
                 file_bytes = file_part.content or b""
                 ext = (os.path.splitext(file_name or "")[1] or "").lower()
@@ -816,24 +785,21 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                 headers=_cors_headers(req)
             )
 
-        # ---- Mode bepalen ----
+        # Mode
         mode_final = detect_mode(mode, question)
 
-        # ---- Zoek context in Azure AI Search (PF-achtig) ----
+        # Retrieval
         if mode_final == "INFO":
             docs = []
             context_text = ""
         else:
             queries = _expand_queries(question, mode_final, document_text)
-            docs = []
             try:
                 docs = hybrid_search_multi(queries, top_k=TOP_K)
             except Exception as e:
                 logging.exception(f"Search error: {e}")
                 docs = []
 
-            # Compacte context
-            # QUICKSCAN/DRAFT/REVIEW krijgen compacte context
             context_text = _join_docs_for_context(
                 docs,
                 per_doc_chars=900,
@@ -841,15 +807,14 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                 max_context_chars=7000
             )
 
-        # Trim raw inputs
+        # Trim inputs
         document_text = _clip(document_text, 12000)
         if isinstance(conversation, list) and len(conversation) > 8:
             conversation = conversation[-8:]
 
-        # ---- Chat history als PF-achtig blok ----
         chat_history_pf = format_history_for_prompt_flow(conversation)
 
-        # ---- Render prompts ----
+        # Render prompts (met jouw instructies 1-op-1)
         system_text, user_text = render_system_and_user(
             mode=mode_final,
             document_text=document_text,
@@ -858,7 +823,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             chat_input=question or "Analyseer het bijgevoegde document."
         )
 
-        # ---- Call Azure OpenAI Chat ----
+        # Chat
         try:
             chat_output = call_chat(system_text, user_text, mode_hint=mode_final)
         except Exception as e:
