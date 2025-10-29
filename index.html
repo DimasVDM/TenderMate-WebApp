@@ -601,21 +601,25 @@ Klaar? Kies een modus of typ je vraag hieronder. Veel succes!
     });
 
     function inferModeFromText(t=''){
-      const s=t.toLowerCase();
-      if(s.includes('quickscan')||s.includes('samenvat')||s.includes('analyse')) return 'QUICKSCAN';
-      if(s.includes('beoordeel')||s.includes('verbeter')||s.includes('review')) return 'REVIEW';
-      return 'DRAFT';
+      const s = t.toLowerCase().trim();
+      const tenderish = /(aanbested|quickscan|gunnings|pve|programma van eisen|arbit|gibit|arvodi|uea|offerte|score|referentie|paginabudget|kpi)/.test(s);
+      const shortGreeting = s.split(/\s+/).length <= 6 && /(hoi|hallo|hey|wat kan|kun jij|help|wie ben)/.test(s);
+      if (shortGreeting && !tenderish) return 'INFO';
+      if (s.includes('quickscan') || s.includes('samenvat') || s.includes('analyse')) return 'QUICKSCAN';
+      if (s.includes('beoordeel') || s.includes('verbeter') || s.includes('review')) return 'REVIEW';
+      return tenderish ? 'DRAFT' : 'INFO';
     }
 
     function addMessage(message,className){
       const el=document.createElement('div');
       el.className=className;
-      if(className.includes('bot-message')){
-        let m=message.trim();
-        const codeBlock=/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/;
-        const match=m.match(codeBlock); if(match) m=match[1];
-        el.innerHTML=marked.parse(m,{breaks:true});
-        el.querySelectorAll('pre > code').forEach(block=>hljs.highlightElement(block));
+      if (className.includes('bot-message')){
+        let m = message.trim();
+        const codeBlock = /^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/;
+        const match = m.match(codeBlock); if (match) m = match[1];
+        const html = marked.parse(m, { breaks:true });
+        el.innerHTML = DOMPurify.sanitize(html);
+        el.querySelectorAll('pre > code').forEach(block => hljs.highlightElement(block));
       }else{
         el.textContent=message;
       }

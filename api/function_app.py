@@ -2,7 +2,7 @@
 # - Ondersteunt PDF/DOCX uploads
 # - PF-achtige retrieval: multi-query expansie + hybride search + semantic rerank
 # - Semantic config: sharepoint-vectorizer-semantic-configuration
-# - Modes: QUICKSCAN / DRAFT / REVIEW (met fallback op vraag)
+# - Modes: QUICKSCAN / DRAFT / REVIEW (+ INFO voor smalltalk/capabilities)
 
 import azure.functions as func
 import logging
@@ -36,7 +36,7 @@ from openai import AzureOpenAI
 
 AZURE_SEARCH_ENDPOINT = os.environ.get("AZURE_SEARCH_ENDPOINT", "").rstrip("/")
 AZURE_SEARCH_API_KEY = os.environ.get("AZURE_SEARCH_API_KEY", "")
-AZURE_SEARCH_INDEX   = os.environ.get("AZURE_SEARCH_INDEX", "sharepoint-vectorizer-direct")
+AZURE_SEARCH_INDEX   = os.environ.get("AZURE_SEARCH_INDEX", "sharepoint-vectorizer-direct-v2")
 
 # Vector veld & semantic config zoals in jouw index
 TEXT_VECTOR_FIELD = "text_vector"
@@ -191,6 +191,15 @@ def _expand_queries(user_q: str, mode: str, doc_hint: str = "") -> List[str]:
     mode = (mode or "").upper()
     hint = (doc_hint or "")[:300]
 
+    # Alleen agressief expanden bij aanbestedings-achtige vragen
+    txt = base.lower()
+    tenderish = any(k in txt for k in [
+        "aanbested", "gunnings", "pve", "programma van eisen", "arbit", "gibit", "arvodi",
+        "uea", "offerte", "score", "quickscan", "referentie", "proof of concept"
+    ])
+    if not tenderish:
+        return [base] if base else []
+
     keywords_common = [
         "(prijs OR prijsplafond OR budget OR 'geraamde waarde' OR kosten)",
         "(contractduur OR looptijd OR verlenging OR startdatum OR einddatum)",
@@ -269,14 +278,26 @@ def build_context(docs: List[Dict[str, Any]]) -> str:
 
 def detect_mode(explicit_mode: str, chat_input: str) -> str:
     m = (explicit_mode or "").strip().upper()
-    if m in ("QUICKSCAN", "REVIEW", "DRAFT"):
+    if m in ("QUICKSCAN", "REVIEW", "DRAFT", "INFO"):
         return m
     txt = (chat_input or "").lower()
+
+    # Heuristiek: kleine begroetingen/capabilities -> INFO
+    tenderish = any(k in txt for k in [
+        "aanbested", "quickscan", "gunnings", "pve", "programma van eisen", "arbit", "gibit",
+        "arvodi", "uea", "offerte", "score", "referentie", "paginabudget", "kpi"
+    ])
+    smalltalk = (len(txt.split()) <= 6) and (not tenderish) and any(
+        g in txt for g in ["hoi", "hallo", "hey", "wat kan", "kun jij", "help", "wie ben"]
+    )
+    if smalltalk:
+        return "INFO"
+
     if "quickscan" in txt or "go/no-go" in txt or "go no go" in txt:
         return "QUICKSCAN"
     if "review" in txt or "beoordeel" in txt or "verbeter" in txt:
         return "REVIEW"
-    return "DRAFT"
+    return "DRAFT" if tenderish else "INFO"
 
 def render_system_and_user(mode: str, document_text: str, context_text: str, chat_history_pf: List[Dict[str, Any]], chat_input: str):
     hist_lines = []
@@ -466,6 +487,19 @@ Noteer wat ontbreekt en wat explicieter moet.
 - Verwachte score en 3 belangrijkste verbeteracties met grootste impact.
 """.strip() + "\n\n" + common_suffix
 
+    elif mode == "INFO":
+        # Nieuwe lichte mode voor smalltalk/capabilities (geen context nodig)
+        system = (
+            "Je bent TenderMate, een AI-assistent voor aanbestedingen. Antwoord kort, duidelijk en praktisch."
+        )
+        user = f"""
+Geef beknopt in bullets:
+- Wat jij kunt (QUICKSCAN / DRAFT / REVIEW), en wanneer ik welke modus gebruik.
+- Hoe je CONTEXT gebruikt (SharePoint → Azure AI Search → relevante fragmenten).
+- Hoe ik documenten kan aanleveren (PDF/DOCX upload).
+- Tips om betere antwoorden te krijgen (concreet en kort).
+""".strip() + "\n\n" + common_suffix
+
     else:  # DRAFT
         system = (
             "Je bent TenderMate, AI-tekstarchitect voor aanbestedingen van IT-Workz.\n"
@@ -507,7 +541,7 @@ Voor elk subcriterium (of thema) volg dit patroon:
 - **Bewijs** – referentie/type bewijs uit CONTEXT (link/naam indien aanwezig)
 
 ## Planning & mijlpalen
-- Tabel met fasen, deliverables, afhankelijkheden en mijlpalen (indien bekend; anders “Niet gespecificeerd in stukken”).
+- Tabel met fasen, deliverables, afhankelijkheden en mijlpaaldata (indien bekend; anders “Niet gespecificeerd in stukken”).
 
 ## Rollen & RACI (compact)
 - Tabel: Activiteit × (R/A/C/I) voor kernrollen (Projectmanager, Solution Architect, Integratie, Security/Privacy, Adoptie/Change, Beheer/SLA).
@@ -536,10 +570,10 @@ Voor elk subcriterium (of thema) volg dit patroon:
 def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     """
     Robuuste AOAI call:
-    - mode-aware max_completion_tokens (kleiner om length-issues te vermijden)
+    - mode-aware max_completion_tokens (retry kleiner om length-issues te vermijden)
     - geen tool_choice/response_format
     - ondersteunt text of list-of-parts
-    - retries: ruimer budget, daarna compacte fallback
+    - retries: kleiner budget + compacte fallback
     - logt token usage & finish_reason
     """
     client = get_aoai_client()
@@ -548,6 +582,7 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         try:
             if not choice:
                 return ""
+            # Probeer diverse velden/structuren
             txt = getattr(choice, "text", None)
             if isinstance(txt, str) and txt.strip():
                 return txt.strip()
@@ -581,14 +616,16 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
             pass
         return ""
 
-    # Mode-aware budgets
+    # Mode-aware budgets (retry kleiner dan eerste call)
     mode = (mode_hint or "").upper()
     if mode == "QUICKSCAN":
-        max_out_1, max_out_2 = 5200, 7200
+        max_out_1, max_out_2 = 2600, 2000
     elif mode == "DRAFT":
-        max_out_1, max_out_2 = 4800, 6800
-    else:
-        max_out_1, max_out_2 = 3000, 4800
+        max_out_1, max_out_2 = 2200, 1800
+    elif mode == "REVIEW":
+        max_out_1, max_out_2 = 1800, 1400
+    else:  # INFO of onbekend
+        max_out_1, max_out_2 = 1000, 800
 
     def _call(messages, max_out):
         return client.chat.completions.create(
@@ -620,10 +657,10 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     if text and text.strip():
         return text.strip()
 
-    # Try 2: iets ruimer budget + platte-tekst instructie
+    # Try 2: kleiner budget + platte-tekst instructie
     retry_msgs = [
         {"role": "system", "content": system_text},
-        {"role": "user",   "content": user_text + "\n\nGeef het volledige antwoord als platte tekst in het Nederlands (geen tools/afbeeldingen/code)."}
+        {"role": "user",   "content": user_text + "\n\nGeef het antwoord compact als platte tekst in het Nederlands (geen tools/afbeeldingen/code)."}
     ]
     resp2 = _call(retry_msgs, max_out_2)
     choice2 = resp2.choices[0] if getattr(resp2, "choices", None) else None
@@ -665,7 +702,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(status_code=204, headers=_cors_headers(req))
 
         if req.method == "GET":
-            return func.HttpResponse("OK - TalkToTenderBot vA.28",
+            return func.HttpResponse("OK - TalkToTenderBot vA.30",
                                      status_code=200,
                                      mimetype="text/plain",
                                      headers=_cors_headers(req))
@@ -783,21 +820,26 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
         mode_final = detect_mode(mode, question)
 
         # ---- Zoek context in Azure AI Search (PF-achtig) ----
-        queries = _expand_queries(question, mode_final, document_text)
-        docs = []
-        try:
-            docs = hybrid_search_multi(queries, top_k=TOP_K)
-        except Exception as e:
-            logging.exception(f"Search error: {e}")
+        if mode_final == "INFO":
             docs = []
+            context_text = ""
+        else:
+            queries = _expand_queries(question, mode_final, document_text)
+            docs = []
+            try:
+                docs = hybrid_search_multi(queries, top_k=TOP_K)
+            except Exception as e:
+                logging.exception(f"Search error: {e}")
+                docs = []
 
-        # Compacte context
-        context_text = _join_docs_for_context(
-            docs,
-            per_doc_chars=900,
-            max_docs=5,
-            max_context_chars=7000
-        )
+            # Compacte context
+            # QUICKSCAN/DRAFT/REVIEW krijgen compacte context
+            context_text = _join_docs_for_context(
+                docs,
+                per_doc_chars=900,
+                max_docs=5,
+                max_context_chars=7000
+            )
 
         # Trim raw inputs
         document_text = _clip(document_text, 12000)
