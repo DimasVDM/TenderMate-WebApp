@@ -1,8 +1,9 @@
-# function_app.py — TenderMate HTTP endpoint (chat + retrieval, gpt-5 safe)
+# function_app.py — TenderMate HTTP endpoint (chat + retrieval, GPT-5 via Azure AI Foundry)
 # - Multipart (PDF/DOCX) en JSON
 # - Hybride search (BM25 + vector) met semantic rerank
-# - gpt-5 safe: max_completion_tokens + STREAMING (vangt lege content af)
-# - Lange outputs voor QUICKSCAN, trimt context/doc om length issues te voorkomen
+# - GPT-5 safe: temperature=1.0 + max_completion_tokens + STREAMING (vangt non-text af)
+# - Non-stream fallback
+# - Iets conservatievere contextcaps om window issues te voorkomen
 
 import azure.functions as func
 import logging
@@ -40,28 +41,28 @@ AZURE_SEARCH_API_KEY  = os.environ.get("AZURE_SEARCH_API_KEY", "")
 AZURE_SEARCH_INDEX    = os.environ.get("AZURE_SEARCH_INDEX", "sharepoint-vectorizer-direct-v2")
 
 TEXT_VECTOR_FIELD = "text_vector"
-SEMANTIC_CONFIG   = "sharepoint-vectorizer-semantic-configuration"
-TOP_K             = int(os.environ.get("TOP_K", "6"))
+SEMANTIC_CONFIG   = os.environ.get("SEMANTIC_CONFIG", "sharepoint-vectorizer-semantic-configuration")
+TOP_K             = int(os.environ.get("TOP_K", "5"))
 
 AOAI_ENDPOINT         = os.environ.get("AOAI_ENDPOINT", "").rstrip("/")
 AOAI_API_KEY          = os.environ.get("AOAI_API_KEY", "")
 AOAI_CHAT_DEPLOYMENT  = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5")
 AOAI_EMBED_DEPLOYMENT = os.environ.get("AOAI_EMBED_DEPLOYMENT", "text-embedding-3-large")
 
-# Output-budgets (completion tokens) – verhoogd voor lange QUICKSCANs
-AOAI_MAX_OUT_QUICKSCAN = int(os.environ.get("AOAI_MAX_OUT_QUICKSCAN", "2200"))
-AOAI_MAX_OUT_DRAFT     = int(os.environ.get("AOAI_MAX_OUT_DRAFT", "1800"))
-AOAI_MAX_OUT_REVIEW    = int(os.environ.get("AOAI_MAX_OUT_REVIEW", "1400"))
-AOAI_MAX_OUT_INFO      = int(os.environ.get("AOAI_MAX_OUT_INFO", "800"))
+# Output-budgets (completion tokens)
+AOAI_MAX_OUT_QUICKSCAN = int(os.environ.get("AOAI_MAX_OUT_QUICKSCAN", "2800"))
+AOAI_MAX_OUT_DRAFT     = int(os.environ.get("AOAI_MAX_OUT_DRAFT", "2200"))
+AOAI_MAX_OUT_REVIEW    = int(os.environ.get("AOAI_MAX_OUT_REVIEW", "1800"))
+AOAI_MAX_OUT_INFO      = int(os.environ.get("AOAI_MAX_OUT_INFO", "900"))
 
 # Document/context caps (karakters)
-DOC_CAP_QUICK_REVIEW = int(os.environ.get("DOC_CAP_QUICK_REVIEW", "8000"))
-DOC_CAP_DRAFT        = int(os.environ.get("DOC_CAP_DRAFT", "10000"))
-CTX_PER_DOC_CHARS    = int(os.environ.get("CTX_PER_DOC_CHARS", "700"))
-CTX_MAX_DOCS         = int(os.environ.get("CTX_MAX_DOCS", "4"))
-CTX_MAX_TOTAL_CHARS  = int(os.environ.get("CTX_MAX_TOTAL_CHARS", "5000"))
+# Document/context caps (karakters) – iets krapper zodat gpt-5 ruimte houdt voor output
+DOC_CAP_QUICK_REVIEW = int(os.environ.get("DOC_CAP_QUICK_REVIEW", "5500"))
+DOC_CAP_DRAFT        = int(os.environ.get("DOC_CAP_DRAFT", "8000"))
+CTX_PER_DOC_CHARS    = int(os.environ.get("CTX_PER_DOC_CHARS", "500"))
+CTX_MAX_DOCS         = int(os.environ.get("CTX_MAX_DOCS", "3"))
+CTX_MAX_TOTAL_CHARS  = int(os.environ.get("CTX_MAX_TOTAL_CHARS", "3000"))
 
-MAX_CONTEXT_DOCS     = int(os.environ.get("MAX_CONTEXT_DOCS", "10"))
 
 # CORS
 ALLOWED_ORIGINS = set([
@@ -110,14 +111,13 @@ def get_aoai_client() -> AzureOpenAI:
     if _aoai_client is None:
         if not AOAI_ENDPOINT or not AOAI_API_KEY:
             raise RuntimeError("AOAI_ENDPOINT/API_KEY ontbreken.")
-        # 2024-02-15-preview is compatibel met gpt-5 chat/completions
+        # Let op: deze api_version werkt met GPT-5 chat/completions
         _aoai_client = AzureOpenAI(
             api_key=AOAI_API_KEY,
             api_version="2024-02-15-preview",
             azure_endpoint=AOAI_ENDPOINT
         )
     return _aoai_client
-
 
 # =============================================================================
 # Utilities
@@ -206,6 +206,29 @@ def format_history_for_prompt_flow(conversation: List[Dict[str, str]]) -> List[D
     return chat_history
 
 
+def _get_field(r, name, default=""):
+    """Robuust veld uitlezen uit Azure Search result (obj/document/dict)."""
+    try:
+        # 1) property op object
+        v = getattr(r, name, None)
+        if v is not None:
+            return v
+        # 2) via onderliggende document dict
+        if hasattr(r, "document") and isinstance(r.document, dict):
+            v = r.document.get(name)
+            if v is not None:
+                return v
+        # 3) als r dict-achtig is
+        try:
+            v = r.get(name, None)
+            if v is not None:
+                return v
+        except Exception:
+            pass
+        return default
+    except Exception:
+        return default
+
 # =============================================================================
 # Search
 # =============================================================================
@@ -277,9 +300,9 @@ def hybrid_search_multi(queries: List[str], top_k: int = TOP_K) -> List[Dict[str
         )
         for r in results:
             hit = {
-                "content":   r.get("chunk", "") or "",
-                "source":    r.get("title", "") or "",
-                "parent_id": r.get("parent_id", "") or ""
+                "content":   _get_field(r, "chunk", ""),
+                "source":    _get_field(r, "title", ""),
+                "parent_id": _get_field(r, "parent_id", "")
             }
             if not hit["content"]:
                 continue
@@ -288,7 +311,6 @@ def hybrid_search_multi(queries: List[str], top_k: int = TOP_K) -> List[Dict[str
                 all_hits[k] = hit
 
     return list(all_hits.values())[: (top_k * 2)]
-
 
 # =============================================================================
 # Prompt rendering (met jouw volledige instructies, niets verwijderd)
@@ -339,7 +361,6 @@ user:
             "Werk in STRICT_FACT_MODE:\n"
             "- Gebruik alleen informatie uit 'document_text' en 'context'.\n"
             "- Als iets ontbreekt: schrijf exact “Niet gespecificeerd in stukken.”\n"
-            "- Je mag korte letterlijk geciteerde fragmenten opnemen met aanhalingstekens.\n"
             "- Geen webzoeken, geen aannames, geen externe feiten.\n\n"
             "Stijl:\n"
             "- Schrijf in helder Nederlands, compact maar volledig.\n"
@@ -347,7 +368,6 @@ user:
             "- Gebruik ✅/❌ en 🟢/🔴 waar gevraagd.\n"
             "- Plaats tabellen waar dat de leesbaarheid verhoogt."
         )
-
         user = f"""
 document_text: {document_text or ''}
 
@@ -382,16 +402,16 @@ Vat beknopt het “waarom” en de doelstellingen samen. Citeer 1–3 sleutelzin
 - Koppel expliciet aan CONTEXT (Producten- en Diensten Catalogus, referenties).
 
 ## KO-criteria en voorwaarden (checklist)
-- **Uitsluitingsgronden / geschiktheidseisen**: ✅/❌ per onderdeel (referentiesector/omvang/complexiteit; technische/beroepsbekwaamheid).
-- **Normen/certificeringen** (ISO/ISAE/NEN/ENSIA, AVG/DPIA): 🟢 Aanwezig / 🔴 Ontbreekt.
-- **Juridische kaders**: benoem **GIBIT/ARBIT/ARVODI**, AVG/Verwerkersovereenkomst, DPIA, securitybeleid (TLS/HTTP headers).
-- **Match met IT-Workz Catalogus**: Benoem matches/gaten t.o.v. CONTEXT.
+- **Uitsluitingsgronden / geschiktheidseisen**: ✅/❌ per onderdeel.
+- **Normen/certificeringen** (ISO/ISAE/NEN/ENSIA, AVG/DPIA): 🟢/🔴.
+- **Juridische kaders**: GIBIT/ARBIT/ARVODI, AVG/DPA, DPIA, securitybeleid (TLS/HTTP headers).
+- **Match met IT-Workz Catalogus**: matches/gaten t.o.v. CONTEXT.
 - **Conclusie haalbaarheid (harde eisen)**: 1 alinea.
 
-## Architectuur & Standaarden (overheidsspecifiek waar relevant)
-- **Common Ground / ZGW-/STUF(-ZKN) / OData**: status & relevantie.
-- **Integraties Microsoft-stapel**: Azure AD (SSO/MFA), Graph API, SharePoint/Teams, Power BI.
-- **Toegankelijkheid**: **WCAG/EN 301 549**; noem expliciet als dit niet gespecificeerd is.
+## Architectuur & Standaarden
+- Common Ground / ZGW-/STUF(-ZKN) / OData — status.
+- Microsoft-integraties (Azure AD/SSO/MFA, Graph, SharePoint/Teams, Power BI).
+- Toegankelijkheid: **WCAG/EN 301 549**; expliciet “Niet gespecificeerd in stukken” indien onbekend.
 
 ## Programma van Eisen/Wensen (samengevat per cluster)
 - **Projectorganisatie & implementatie**
@@ -400,198 +420,119 @@ Vat beknopt het “waarom” en de doelstellingen samen. Citeer 1–3 sleutelzin
 - **Beheer/Support/SLA**
 - **Adoptie/Training**
 - **Planning/Migratie**
-Noteer opvallende punten en hiaten. Gebruik bullets.
 
 ## Analyse van Vereiste Disciplines
-[ ] Lijst de belangrijkste uitvoeringsrollen o.b.v. CONTEXT (alleen relevante intern bekende rollen).
-[ ] Stel een voorlopig bid-team samen o.b.v. match met CONTEXT.
+[ ] Lijst kernrollen o.b.v. CONTEXT.  
+[ ] Voorlopig bid-team o.b.v. match met CONTEXT.
 
 ## Weging, paginabudget en planning
-- **Weging**: noteer percentages indien aanwezig; anders “Niet gespecificeerd in stukken”.
-- **Paginabudget**: noteer limiet. **Voorstel verdeling** per onderdeel (o.b.v. weging).
+- **Weging**: percentages indien aanwezig.
+- **Paginabudget**: limiet + verdelingsvoorstel.
 - **Planning & deadlines**: alle mijlpalen (vragenronde, indiening, demo/PoC, gunning, start).
 
 ## Budget en concurrentiepositie
 - **Budgetsignalen** (plafond/raming/prijsmechaniek).
-- **Concurrenten (indicatief)** en **positie IT-Workz** o.b.v. CONTEXT (sterktes/zwaktes kort).
+- **Concurrenten (indicatief)** en **positie IT-Workz** o.b.v. CONTEXT.
 
 ## Showstoppers / risico’s (met mitigatie of verhelderingsvraag)
-- Korte lijst met concrete eisen/risico’s + korte mitigatie/te-stellen vraag.
+- Lijst met concrete eisen/risico’s + korte mitigatie/te-stellen vraag.
 
 ## Concurrentie-analyse
-- Benoem (indien mogelijk via CONTEXT) huidige dienstverlener/bekende concurrenten; sterke/zwakke punten.
+- (Indien via CONTEXT) huidige dienstverlener/bekende concurrenten; sterke/zwakke punten.
 
 ## Referenties (advies)
-- Adviseer 2–3 **typen** referenties (branche/omvang/complexiteit) en **waarom** deze scoren. Koppel aan CONTEXT.
+- 2–3 **typen** referenties (branche/omvang/complexiteit) + “waarom dit scoort”.
 
 ## In te dienen bewijsstukken & **status**
-- **UEA, KvK, ISO/ISAE, verzekeringen, DPA/Verwerkersovereenkomst, prijzenblad, referentieverklaring**.
-- Zet per stuk: **🟢 Geldig / 🔴 Verlopen/ontbreekt / Niet gespecificeerd in stukken**.
-- Voeg vervaldata toe als die in de CONTEXT staan.
+- **UEA, KvK, ISO/ISAE, verzekeringen, DPA/Verwerkers, prijzenblad, referentieverklaring**.
+- Status: **🟢 Geldig / 🔴 Verlopen/ontbreekt / Niet gespecificeerd in stukken**.
 
 ## Standaard- en verdiepingsvragen
-- **Standaardvragen**: verduidelijk scope/eisen/voorwaarden/planning.
-- **Verdiepingsvragen**: strategische “vraag achter de vraag”.
+- Standaardvragen (scope/eisen/voorwaarden/planning).
+- Verdiepingsvragen (strategisch).
 
 ## Actiechecklist (intern)
-- (Taak; **Eigenaar**; **Datum**) — 6–10 concrete acties die het bidproces starten.
+- (Taak; **Eigenaar**; **Datum**) — 6–10 concrete acties.
 
 ## Go/No-Go indicatie (conclusie)
-- **🟢/🟡/🔴** + 4–6 onderbouwende bullets (KO, referenties, normen, concurrentie, fit met Catalogus).
+- **🟢/🟡/🔴** + 4–6 onderbouwende bullets.
 """.strip() + "\n\n" + common_suffix
 
     elif mode == "REVIEW":
         system = (
             "Je bent TenderMate, AI-kwaliteitsauditor en scoringscoach voor aanbestedingen van IT-Workz.\n"
             "Werk in STRICT_FACT_MODE:\n"
-            "- Beoordeel uitsluitend t.o.v. het aangeleverde 'document_text', het gunningskader en de CONTEXT.\n"
-            "- Geen aannames; ontbrekende info = “Niet gespecificeerd in stukken.”\n\n"
-            "Stijl:\n"
-            "- Wees concreet, actiegericht, en scoregericht.\n"
-            "- Gebruik checklijsten, tabellen en voorbeeldherschrijvingen.\n"
-            "- Lever geen generieke adviezen: maak ze toetsbaar (SMART, dekking, bewijs)."
+            "- Beoordeel uitsluitend t.o.v. 'document_text', gunningskader en CONTEXT.\n"
+            "- Geen aannames; ontbrekende info = “Niet gespecificeerd in stukken.”\n"
+            "Stijl: concreet en actiegericht; tabellen en voorbeeldherschrijvingen toegestaan."
         )
-
         user = f"""
 document_text: {document_text or ''}
 
 OPDRACHT
 Beoordeel en **versterk** de tekst t.o.v. gunningscriterium en beoordelingskader. 
-Verbeter op **volledigheid, relevantie, bewijswaarde en scoringspotentieel**. 
 Houd je aan STRICT_FACT_MODE en volg **deze koppen exact**:
 
 ## Korte overall beoordeling (in 5 bullets)
-- Sterkste punten, grootste gaten, verwachte score-impact.
-
-## Dekking & structuur t.o.v. gunningskader
-- **Dekkingsmatrix (tabel)** – criteriumonderdeel × (Gedekt: ✅/⚠/❌) + 1 regel toelichting per cel.
-- Wel/geen aansluiting op gevraagde indeling en beoordelingsaspecten.
-
+## Dekking & structuur t.o.v. gunningskader (incl. dekkingsmatrix)
 ## KO/voorwaarden & juridische punten
-- KO-eisen, uitsluitingsgronden, geschiktheid, normen (ISO/ISAE/NEN/ENSIA), AVG/DPIA, **GIBIT/ARBIT/ARVODI**, security (TLS/HTTP headers).  
-- Conclusie haalbaarheid + expliciete hiaten.
-
-## Architectuur & standaarden (waar relevant)
-- Common Ground / ZGW-/STUF(-ZKN) / OData.
-- Microsoft-integraties (Azure AD, Graph, SharePoint/Teams, Power BI).
-- Toegankelijkheid **WCAG/EN 301 549**.  
-Noteer wat ontbreekt en wat explicieter moet.
-
+## Architectuur & standaarden
 ## KPI-audit (SMART)
-- Tabel met huidige KPI-zinnen → **verbeterde SMART-variant** + meetmethode + eigenaar.
-- Voeg 2–4 **score-verhogende KPI’s** toe die passen bij het criterium.
-
-## Stijl & tone of voice (doelgroep)
-- Past de toon bij onderwijs/gemeente? Jargon/leesbaarheid, actief taalgebruik, benefits/impact.
-
+## Stijl & tone of voice
 ## Paginabudget & visuele opbouw
-- Is de tekst binnen limiet? Waar inkorten/uitbreiden.  
-- DTP-tips: tabellen/figuren die score verhogen (bijv. RACI, roadmap, KPI-dashboard).
-
 ## “Boven verwachting” (onderscheidend)
-- 5–8 concrete voorstellen (bv. PoC/demo-script, adoptie-interventies, security-assurance, datagedreven monitoring).
-
 ## Herschrijfsuggesties (voorbeeld)
-- **Voorbeeldblok(ken)**: geef 1–2 kernparagrafen opnieuw geschreven in **score-proof** stijl (max. ~300 woorden elk).
-
-## Referenties & bewijs (gericht)
-- Adviseer 2–3 **typen** referenties + kort “waarom dit scoort”; koppel aan CONTEXT.
-
+## Referenties & bewijs
 ## Actiechecklist (intern)
-- 8–12 concrete acties met **Eigenaar** en **Datum** (KPI’s aanscherpen, bewijs verzamelen, structuur corrigeren, visuals maken, legal/security checks).
-
 ## Eindoordeel (kort)
-- Verwachte score en 3 belangrijkste verbeteracties met grootste impact.
 """.strip() + "\n\n" + common_suffix
 
     elif mode == "INFO":
-        system = (
-            "Je bent TenderMate, een AI-assistent voor aanbestedingen. Antwoord kort, duidelijk en praktisch."
-        )
+        system = "Je bent TenderMate, een AI-assistent voor aanbestedingen. Antwoord kort, duidelijk en praktisch."
         user = f"""
-Geef beknopt in bullets:
-- Wat jij kunt (QUICKSCAN / DRAFT / REVIEW), en wanneer ik welke modus gebruik.
+Geef in bullets:
+- Wat jij kunt (QUICKSCAN / DRAFT / REVIEW) en wanneer welke modus.
 - Hoe je CONTEXT gebruikt (SharePoint → Azure AI Search → relevante fragmenten).
 - Hoe ik documenten kan aanleveren (PDF/DOCX upload).
-- Tips om betere antwoorden te krijgen (concreet en kort).
+- Tips om betere antwoorden te krijgen.
 """.strip() + "\n\n" + common_suffix
 
     else:  # DRAFT
         system = (
             "Je bent TenderMate, AI-tekstarchitect voor aanbestedingen van IT-Workz.\n"
-            "Werk in STRICT_FACT_MODE:\n"
-            "- Gebruik alleen informatie uit 'document_text' en 'context'.\n"
-            "- Als iets ontbreekt: schrijf exact “Niet gespecificeerd in stukken.”\n"
-            "- Geen webzoeken, geen aannames.\n\n"
-            "Stijl:\n"
-            "- Schrijf in helder Nederlands, wervend maar feitelijk; proza met korte alinea’s.\n"
-            "- Gebruik duidelijke Markdown-koppen (##/###) en waar nuttig korte tabellen.\n"
-            "- Integreer voorbeelden/quotes uit CONTEXT alleen als ze aantoonbaar relevant zijn."
+            "STRICT_FACT_MODE: alleen 'document_text' en 'context'. Ontbrekend = “Niet gespecificeerd in stukken.”"
         )
-
         user = f"""
 document_text: {document_text or ''}
 
 OPDRACHT
-Genereer een **scoregericht concept** dat exact aansluit op het gevraagde **gunningscriterium** en het beoordelingskader. 
-Gebruik CONTEXT om passende voorbeelden, referenties en bewijs te verbinden. 
-Houd je aan STRICT_FACT_MODE en volg **deze koppen exact**:
+Genereer een **scoregericht concept** conform gunningscriterium. 
+Volg **deze koppen exact** (fact-only):
 
 ## Executive summary (scorefocus in 5 bullets)
-- Wat vragen ze? Hoe scoren we maximaal? Belangrijkste 3 bewijsankers.
-
 ## Begrips- & beoordelingskader (facts)
-- Herformuleer kort het criterium in eigen woorden (1 alinea).
-- Beoordelingsaspecten/weging: noteer percentages indien genoemd; anders “Niet gespecificeerd in stukken”.
-
 ## Voorstelstructuur conform criterium
-- Geef de exacte indeling (kopjes/subkopjes) die we in het Word-document kunnen overnemen.
-
-## Uitwerking per subcriterium
-Voor elk subcriterium (of thema) volg dit patroon:
-- **Wat wordt gevraagd (quote/para-phrase)**  
-- **Onze aanpak** (proces/stappen, verantwoordelijkheden)  
-- **Architectuur & integraties** (Azure AD/SSO/MFA, Graph, SharePoint/Teams, Power BI, Common Ground/ZGW/STUF/OData/WCAG/EN 301 549 waar relevant)  
-- **KPI’s (SMART)** – inclusief meetmethode, norm, frequentie, eigenaar  
-- **Risico’s & mitigatie** – 1–2 concreet  
-- **Bewijs** – referentie/type bewijs uit CONTEXT (link/naam indien aanwezig)
-
+## Uitwerking per subcriterium (aanpak, architectuur, KPI’s, risico’s, bewijs)
 ## Planning & mijlpalen
-- Tabel met fasen, deliverables, afhankelijkheden en mijlpaaldata (indien bekend; anders “Niet gespecificeerd in stukken”).
-
 ## Rollen & RACI (compact)
-- Tabel: Activiteit × (R/A/C/I) voor kernrollen (Projectmanager, Solution Architect, Integratie, Security/Privacy, Adoptie/Change, Beheer/SLA).
-
 ## KPI-overzicht (tabel)
-| KPI | Definitie | Norm | Meting | Frequentie | Eigenaar |
-
 ## Paginabudget & opmaak
-- Noteer limiet (indien opgegeven). Geef **een verdelingsvoorstel** per hoofdstuk met korte motivatie.
-- Tips voor opmaak/illustraties (figuur-/tabelsuggesties) die scoren.
-
 ## Referenties & bewijs (gericht)
-- 2–3 **typen** referenties met 1 zin “waarom dit scoort” per type. Koppel aan CONTEXT.
-
-## Verhelderingsvragen aan aanbestedende dienst
-- 6–10 vragen die scoren (duidelijkheid + optimalisatie van aanpak/KPI’s).
-
+## Verhelderingsvragen
 ## Bronnen/quotes (compact)
-- Noem gebruikte CONTEXT-bronnen of citaten (1 regel per bron).
 """.strip() + "\n\n" + common_suffix
 
     return system, user
 
-
 # =============================================================================
-# Chat call (gpt-5 safe: streaming + max_completion_tokens)
+# Chat call (GPT-5: streaming + max_completion_tokens + text-only)
 # =============================================================================
 
 def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     client = get_aoai_client()
-
     is_gpt5 = AOAI_CHAT_DEPLOYMENT.lower().startswith("gpt-5")
 
-    # Output budgets per mode (completion tokens)
+    # Output budgets per mode
     mode = (mode_hint or "").upper()
     if mode == "QUICKSCAN":
         out_1, out_2 = AOAI_MAX_OUT_QUICKSCAN, max(800, AOAI_MAX_OUT_QUICKSCAN - 400)
@@ -602,17 +543,36 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     else:
         out_1, out_2 = AOAI_MAX_OUT_INFO, max(400, AOAI_MAX_OUT_INFO - 200)
 
+    def _collect_text_from_delta(delta) -> str:
+        out = []
+        c = getattr(delta, "content", None)
+        if isinstance(c, str) and c:
+            out.append(c)
+        if isinstance(c, list):
+            for p in c:
+                if isinstance(p, dict) and p.get("type") in ("text", "output_text"):
+                    t = p.get("text")
+                    if isinstance(t, str) and t:
+                        out.append(t)
+        return "".join(out)
+
     def _call_stream(messages, max_out) -> str:
-        """Stream tokens (vangt lege content edge-cases af)."""
-        kwargs = {"model": AOAI_CHAT_DEPLOYMENT, "messages": messages, "stream": True}
+        """Stream in text-only; voorkom tool-use/afbeeldingen."""
+        kwargs = {
+            "model": AOAI_CHAT_DEPLOYMENT,
+            "messages": messages,
+            "stream": True,
+            "tool_choice": "none",
+            "response_format": {"type": "text"},
+        }
         if is_gpt5:
             kwargs["max_completion_tokens"] = max_out
             kwargs["temperature"] = 1.0
+            # Sommige tenants verwachten dit expliciet:
+            kwargs["modalities"] = ["text"]
         else:
             kwargs["max_tokens"] = max_out
             kwargs["temperature"] = 0.7
-            kwargs["tool_choice"] = "none"
-            kwargs["response_format"] = {"type": "text"}
 
         chunks: List[str] = []
         try:
@@ -622,32 +582,28 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
                     delta = event.choices[0].delta
                 except Exception:
                     continue
-                # gpt-5: tekst kan in delta.content (str) of parts zitten
-                c = getattr(delta, "content", None)
-                if isinstance(c, str):
-                    chunks.append(c)
-                elif isinstance(c, list):
-                    for p in c:
-                        if isinstance(p, dict) and p.get("type") in ("text", "output_text"):
-                            t = p.get("text")
-                            if isinstance(t, str):
-                                chunks.append(t)
+                piece = _collect_text_from_delta(delta)
+                if piece:
+                    chunks.append(piece)
         except Exception as e:
             logging.exception(f"AOAI stream error: {e}")
             return ""
-        return "".join(chunks).strip()
+        text = "".join(chunks).strip()
+        if not text:
+            logging.error("Empty stream result (no text parts). Possible causes: tool-only response blocked, or prompt too large.")
+        return text
 
     base_msgs = [
         {"role": "system", "content": system_text},
         {"role": "user",   "content": user_text},
     ]
 
-    # Try 1 (stream)
+    # Try 1: stream
     text = _call_stream(base_msgs, out_1)
     if text:
         return text
 
-    # Try 2 (compacte hint)
+    # Try 2: compact hint
     retry_msgs = [
         {"role": "system", "content": system_text},
         {"role": "user",   "content": user_text + "\n\nGeef het antwoord compact als platte tekst in het Nederlands (geen tools/afbeeldingen/code)."}
@@ -656,17 +612,49 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     if text2:
         return text2
 
-    # Try 3 (zeer compact)
-    compact_msgs = [
-        {"role": "system", "content": system_text},
-        {"role": "user",   "content": user_text + "\n\nANTWOORD BEPERKT: Geef een compacte versie (max. ~600 woorden), alleen hoofdlijnen & tabellen, platte tekst."}
-    ]
-    text3 = _call_stream(compact_msgs, 1200 if is_gpt5 else 800)
-    if text3:
-        return text3
+    # Try 3: non-stream fallback
+    try:
+        kwargs = {
+            "model": AOAI_CHAT_DEPLOYMENT,
+            "messages": [
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text + "\n\nANTWOORD BEPERKT: Compacte versie (~600 woorden), alleen hoofdlijnen & tabellen."}
+            ],
+            "tool_choice": "none",
+            "response_format": {"type": "text"},
+        }
+        if is_gpt5:
+            kwargs["max_completion_tokens"] = min(out_2, 1200)
+            kwargs["temperature"] = 1.0
+            kwargs["modalities"] = ["text"]
+        else:
+            kwargs["max_tokens"] = min(out_2, 800)
+            kwargs["temperature"] = 0.7
+
+        comp = client.chat.completions.create(**kwargs)
+
+        outs = []
+        for ch in comp.choices:
+            msg = getattr(ch, "message", None)
+            if not msg:
+                continue
+            c = getattr(msg, "content", None)
+            if isinstance(c, str) and c:
+                outs.append(c)
+            elif isinstance(c, list):
+                for p in c:
+                    if isinstance(p, dict) and p.get("type") in ("text", "output_text"):
+                        t = p.get("text")
+                        if isinstance(t, str) and t:
+                            outs.append(t)
+        final = "".join(outs).strip()
+        if final:
+            return final
+        logging.error("Non-stream completion returned no text content.")
+    except Exception as e:
+        logging.exception(f"AOAI non-stream fallback error: {e}")
 
     return "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of verlaag de omvang (minder context of kortere vraag)."
-
 
 # =============================================================================
 # HTTP Function
@@ -680,7 +668,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(status_code=204, headers=_cors_headers(req))
 
         if req.method == "GET":
-            return func.HttpResponse("OK - TenderMate TalkToTenderBot - vA.36", status_code=200,
+            return func.HttpResponse("OK - TenderMate TalkToTenderBot - vA.50", status_code=200,
                                      mimetype="text/plain", headers=_cors_headers(req))
 
         # Basic intake logging
@@ -813,6 +801,12 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             conversation = conversation[-8:]
 
         chat_history_pf = format_history_for_prompt_flow(conversation)
+
+        # Log promptlengtes voor diagnose
+        try:
+            logging.info(f"lens: system={len(mode_final)}, doc={len(document_text)}, ctx={len(context_text)}, hist={len(json.dumps(chat_history_pf))}, q={len(question)}")
+        except Exception:
+            pass
 
         # ---- Render prompts ----
         system_text, user_text = render_system_and_user(
