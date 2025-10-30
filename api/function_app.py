@@ -530,17 +530,15 @@ Volg **deze koppen exact** (fact-only):
 
 def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     """
-    Robuuste GPT-5 call:
-    - géén streaming voor GPT-5 (want sommige deployments streamen leeg of alleen tools)
-    - altijd tool_choice="none"
-    - altijd response_format={"type":"text"}
-    - altijd temperature=1.0
-    - gebruikt max_completion_tokens (niet max_tokens)
+    GPT-5-safe call voor Azure:
+    - geen streaming (want jouw deployment stuurt dan niks)
+    - geen 'modalities'
+    - eerst met response_format={"type":"text"}, bij 400 meteen zonder
     """
     client = get_aoai_client()
     is_gpt5 = AOAI_CHAT_DEPLOYMENT.lower().startswith("gpt-5")
 
-    # budgets per modus
+    # 1) bepaal outputbudget per modus
     mode = (mode_hint or "").upper()
     if mode == "QUICKSCAN":
         max_out = AOAI_MAX_OUT_QUICKSCAN
@@ -556,37 +554,20 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         {"role": "user",   "content": user_text},
     ]
 
-    # ====== GPT-5 pad: non-stream, zo simpel mogelijk ======
-    if is_gpt5:
-        kwargs = {
-            "model": AOAI_CHAT_DEPLOYMENT,
-            "messages": messages,
-            "tool_choice": "none",
-            # AZURE GPT-5 wil deze:
-            "max_completion_tokens": max_out,
-            "temperature": 1.0,
-        }
-        # sommige tenants slikken dit, sommige negeren het
-        kwargs["response_format"] = {"type": "text"}
-        # sommige Foundry-setups willen dit expliciet
-        kwargs["modalities"] = ["text"]
-
-        try:
-            resp = client.chat.completions.create(**kwargs)
-        except Exception as e:
-            logging.exception(f"AOAI gpt-5 error: {e}")
-            return f"AI-dienst error: {e}"
-
-        # ---- tekst uit response halen ----
+    # ====== helper om tekst uit completion te vissen ======
+    def _extract_text(resp) -> str:
         parts = []
         try:
             for choice in resp.choices:
-                # 1) klassieke vorm: string
-                c = getattr(choice.message, "content", None)
+                msg = getattr(choice, "message", None)
+                if not msg:
+                    continue
+                c = getattr(msg, "content", None)
+                # vorm 1: plain string
                 if isinstance(c, str) and c.strip():
                     parts.append(c.strip())
                     continue
-                # 2) gpt-5 list-of-parts vorm
+                # vorm 2: list-of-parts (gpt-5)
                 if isinstance(c, list):
                     for p in c:
                         if isinstance(p, dict) and p.get("type") in ("text", "output_text"):
@@ -594,16 +575,48 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
                             if isinstance(t, str) and t.strip():
                                 parts.append(t.strip())
         except Exception as e:
-            logging.exception(f"AOAI gpt-5 parse error: {e}")
+            logging.exception(f"extract_text error: {e}")
+        return "\n".join(parts).strip()
 
-        final_text = "\n".join(parts).strip()
-        if not final_text:
-            # laatste redmiddel: hele response loggen
-            logging.error(f"GPT-5 gaf geen tekst terug. Raw resp: {resp}")
-            return "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of verlaag de omvang (minder context of kortere vraag)."
-        return final_text
+    # ====== GPT-5 pad: non-stream ======
+    if is_gpt5:
+        base_kwargs = {
+            "model": AOAI_CHAT_DEPLOYMENT,
+            "messages": messages,
+            "tool_choice": "none",
+            "max_completion_tokens": max_out,
+            "temperature": 1.0,
+        }
 
-    # ====== NIET-gpt-5 pad: mag gewoon streamen ======
+        # ---- poging 1: mét response_format ----
+        try_kwargs = dict(base_kwargs)
+        try_kwargs["response_format"] = {"type": "text"}
+        try:
+            resp = client.chat.completions.create(**try_kwargs)
+            text = _extract_text(resp)
+            if text:
+                return text
+            logging.error(f"GPT-5 gaf lege text terug (met response_format). Raw: {resp}")
+        except Exception as e:
+            # check of het zo'n 400 unknown_parameter is
+            msg = str(e)
+            logging.warning(f"GPT-5 eerste call faalde, probeer zonder response_format. Error: {msg}")
+            # we vallen hieronder automatisch terug
+
+        # ---- poging 2: ZONDER response_format ----
+        try:
+            resp = client.chat.completions.create(**base_kwargs)
+            text = _extract_text(resp)
+            if text:
+                return text
+            logging.error(f"GPT-5 gaf lege text terug (zonder response_format). Raw: {resp}")
+        except Exception as e:
+            logging.exception(f"GPT-5 call (zonder response_format) error: {e}")
+            return f"AI-dienst error: {e}"
+
+        return "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of verlaag de omvang (minder context of kortere vraag)."
+
+    # ====== NIET-gpt-5 pad (mag streamen) ======
     def _collect_text_from_delta(delta) -> str:
         out = []
         c = getattr(delta, "content", None)
@@ -617,34 +630,31 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
                         out.append(t)
         return "".join(out)
 
-    def _call_stream(messages, max_tokens) -> str:
+    # stream eerst
+    try:
+        stream = client.chat.completions.create(
+            model=AOAI_CHAT_DEPLOYMENT,
+            messages=messages,
+            stream=True,
+            max_tokens=max_out,
+            temperature=0.7,
+            tool_choice="none",
+            response_format={"type": "text"},
+        )
         chunks: List[str] = []
-        try:
-            stream = client.chat.completions.create(
-                model=AOAI_CHAT_DEPLOYMENT,
-                messages=messages,
-                stream=True,
-                max_tokens=max_tokens,
-                temperature=0.7,
-                tool_choice="none",
-                response_format={"type": "text"},
-            )
-            for event in stream:
-                try:
-                    delta = event.choices[0].delta
-                except Exception:
-                    continue
-                piece = _collect_text_from_delta(delta)
-                if piece:
-                    chunks.append(piece)
-        except Exception as e:
-            logging.exception(f"AOAI stream error (non-gpt5): {e}")
-            return ""
-        return "".join(chunks).strip()
-
-    text = _call_stream(messages, max_out)
-    if text:
-        return text
+        for event in stream:
+            try:
+                delta = event.choices[0].delta
+            except Exception:
+                continue
+            piece = _collect_text_from_delta(delta)
+            if piece:
+                chunks.append(piece)
+        txt = "".join(chunks).strip()
+        if txt:
+            return txt
+    except Exception as e:
+        logging.exception(f"stream (niet-gpt5) error: {e}")
 
     # non-stream fallback
     try:
@@ -656,22 +666,11 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
             tool_choice="none",
             response_format={"type": "text"},
         )
-        outs = []
-        for ch in resp.choices:
-            c = getattr(ch.message, "content", None)
-            if isinstance(c, str) and c:
-                outs.append(c)
-            elif isinstance(c, list):
-                for p in c:
-                    if isinstance(p, dict) and p.get("type") in ("text", "output_text"):
-                        t = p.get("text")
-                        if isinstance(t, str) and t:
-                            outs.append(t)
-        final = "".join(outs).strip()
-        if final:
-            return final
+        text = _extract_text(resp)
+        if text:
+            return text
     except Exception as e:
-        logging.exception(f"AOAI non-stream fallback error: {e}")
+        logging.exception(f"non-stream (niet-gpt5) error: {e}")
 
     return "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of verlaag de omvang (minder context of kortere vraag)."
 
