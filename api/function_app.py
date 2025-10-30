@@ -530,15 +530,17 @@ Volg **deze koppen exact** (fact-only):
 
 def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     """
-    GPT-5-safe call voor Azure:
-    - geen streaming (want jouw deployment stuurt dan niks)
-    - geen 'modalities'
-    - eerst met response_format={"type":"text"}, bij 400 meteen zonder
+    Ultra-minimale GPT-5 call voor Azure AI Foundry:
+    - GEEN streaming
+    - GEEN tool_choice
+    - GEEN modalities
+    - GEEN response_format
+    - ALLEEN: model, messages, max_completion_tokens, temperature=1.0
     """
     client = get_aoai_client()
     is_gpt5 = AOAI_CHAT_DEPLOYMENT.lower().startswith("gpt-5")
 
-    # 1) bepaal outputbudget per modus
+    # 1) outputbudget per modus
     mode = (mode_hint or "").upper()
     if mode == "QUICKSCAN":
         max_out = AOAI_MAX_OUT_QUICKSCAN
@@ -554,7 +556,6 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         {"role": "user",   "content": user_text},
     ]
 
-    # ====== helper om tekst uit completion te vissen ======
     def _extract_text(resp) -> str:
         parts = []
         try:
@@ -567,7 +568,7 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
                 if isinstance(c, str) and c.strip():
                     parts.append(c.strip())
                     continue
-                # vorm 2: list-of-parts (gpt-5)
+                # vorm 2: list of parts (gpt-5)
                 if isinstance(c, list):
                     for p in c:
                         if isinstance(p, dict) and p.get("type") in ("text", "output_text"):
@@ -578,99 +579,42 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
             logging.exception(f"extract_text error: {e}")
         return "\n".join(parts).strip()
 
-    # ====== GPT-5 pad: non-stream ======
     if is_gpt5:
+        # ===== GPT-5: allerkaalst mogelijke request =====
         base_kwargs = {
             "model": AOAI_CHAT_DEPLOYMENT,
             "messages": messages,
-            "tool_choice": "none",
             "max_completion_tokens": max_out,
             "temperature": 1.0,
         }
 
-        # ---- poging 1: mét response_format ----
-        try_kwargs = dict(base_kwargs)
-        try_kwargs["response_format"] = {"type": "text"}
-        try:
-            resp = client.chat.completions.create(**try_kwargs)
-            text = _extract_text(resp)
-            if text:
-                return text
-            logging.error(f"GPT-5 gaf lege text terug (met response_format). Raw: {resp}")
-        except Exception as e:
-            # check of het zo'n 400 unknown_parameter is
-            msg = str(e)
-            logging.warning(f"GPT-5 eerste call faalde, probeer zonder response_format. Error: {msg}")
-            # we vallen hieronder automatisch terug
-
-        # ---- poging 2: ZONDER response_format ----
         try:
             resp = client.chat.completions.create(**base_kwargs)
-            text = _extract_text(resp)
-            if text:
-                return text
-            logging.error(f"GPT-5 gaf lege text terug (zonder response_format). Raw: {resp}")
         except Exception as e:
-            logging.exception(f"GPT-5 call (zonder response_format) error: {e}")
+            logging.exception(f"AOAI gpt-5 error: {e}")
             return f"AI-dienst error: {e}"
 
+        text = _extract_text(resp)
+        if text:
+            return text
+
+        logging.error(f"GPT-5 gaf geen tekst terug. Raw response: {resp}")
         return "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of verlaag de omvang (minder context of kortere vraag)."
 
-    # ====== NIET-gpt-5 pad (mag streamen) ======
-    def _collect_text_from_delta(delta) -> str:
-        out = []
-        c = getattr(delta, "content", None)
-        if isinstance(c, str) and c:
-            out.append(c)
-        if isinstance(c, list):
-            for p in c:
-                if isinstance(p, dict) and p.get("type") in ("text", "output_text"):
-                    t = p.get("text")
-                    if isinstance(t, str) and t:
-                        out.append(t)
-        return "".join(out)
-
-    # stream eerst
-    try:
-        stream = client.chat.completions.create(
-            model=AOAI_CHAT_DEPLOYMENT,
-            messages=messages,
-            stream=True,
-            max_tokens=max_out,
-            temperature=0.7,
-            tool_choice="none",
-            response_format={"type": "text"},
-        )
-        chunks: List[str] = []
-        for event in stream:
-            try:
-                delta = event.choices[0].delta
-            except Exception:
-                continue
-            piece = _collect_text_from_delta(delta)
-            if piece:
-                chunks.append(piece)
-        txt = "".join(chunks).strip()
-        if txt:
-            return txt
-    except Exception as e:
-        logging.exception(f"stream (niet-gpt5) error: {e}")
-
-    # non-stream fallback
+    # ===== NIET-gpt-5 pad (mag wat meer) =====
     try:
         resp = client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
             messages=messages,
             max_tokens=max_out,
             temperature=0.7,
-            tool_choice="none",
-            response_format={"type": "text"},
         )
         text = _extract_text(resp)
         if text:
             return text
     except Exception as e:
-        logging.exception(f"non-stream (niet-gpt5) error: {e}")
+        logging.exception(f"non-gpt5 error: {e}")
+        return f"AI-dienst error: {e}"
 
     return "Er kwam geen leesbare tekst terug van het AI-model. Probeer het nogmaals of verlaag de omvang (minder context of kortere vraag)."
 
@@ -687,7 +631,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(status_code=204, headers=_cors_headers(req))
 
         if req.method == "GET":
-            return func.HttpResponse("OK - TenderMate TalkToTenderBot - vA.51", status_code=200,
+            return func.HttpResponse("OK - TenderMate TalkToTenderBot - vA.52", status_code=200,
                                      mimetype="text/plain", headers=_cors_headers(req))
 
         # Basic intake logging
