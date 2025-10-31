@@ -549,8 +549,8 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
             model=AOAI_CHAT_DEPLOYMENT,
             messages=messages,
             stream=True,
-            max_tokens=max_out,
-            temperature=0.7,
+            max_completion_tokens=max_out,
+            temperature=1.0,
             response_format={"type": "text"},
         )
         chunks: List[str] = []
@@ -579,8 +579,8 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         resp = client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
             messages=messages,
-            max_tokens=max_out,
-            temperature=0.7,
+            max_completion_tokens=max_out,
+            temperature=1.0,
             response_format={"type": "text"},
         )
         parts = []
@@ -605,8 +605,8 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         resp = client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
             messages=messages,
-            max_tokens=max_out,
-            temperature=0.7,
+            max_completion_tokens=max_out,
+            temperature=1.0,
         )
         parts = []
         for ch in resp.choices:
@@ -633,7 +633,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(status_code=204, headers=_cors_headers(req))
 
         if req.method == "GET":
-            return func.HttpResponse("OK - TenderMate TalkToTenderBot - gpt-5", status_code=200,
+            return func.HttpResponse("OK - TenderMate TalkToTenderBot - gpt-5.2", status_code=200,
                                      mimetype="text/plain", headers=_cors_headers(req))
 
         try:
