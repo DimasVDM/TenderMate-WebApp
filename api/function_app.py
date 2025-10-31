@@ -1,8 +1,7 @@
 # function_app.py — TenderMate HTTP endpoint (chat + retrieval) met Azure AI Foundry gpt-4o
 # - JSON + multipart (PDF/DOCX)
 # - Hybride search (BM25 + vector) met semantic config
-# - Compacte context caps zodat er ruimte blijft voor lange quickscans
-# - gpt-4o als default (minder strikt dan gpt-5)
+# - Met vaste "gemeentelijke CRM tender kit" in QUICKSCAN zodat output nooit kaal is
 
 import azure.functions as func
 import logging
@@ -35,7 +34,6 @@ from openai import AzureOpenAI
 # ENV / Config
 # =============================================================================
 
-# Azure AI Search
 AZURE_SEARCH_ENDPOINT = os.environ.get("AZURE_SEARCH_ENDPOINT", "").rstrip("/")
 AZURE_SEARCH_API_KEY  = os.environ.get("AZURE_SEARCH_API_KEY", "")
 AZURE_SEARCH_INDEX    = os.environ.get("AZURE_SEARCH_INDEX", "sharepoint-vectorizer-direct-v2")
@@ -44,20 +42,19 @@ TEXT_VECTOR_FIELD = "text_vector"
 SEMANTIC_CONFIG   = os.environ.get("SEMANTIC_CONFIG", "sharepoint-vectorizer-semantic-configuration")
 TOP_K             = int(os.environ.get("TOP_K", "5"))
 
-# Azure AI Foundry (OpenAI)
+# Azure AI Foundry
 AOAI_ENDPOINT         = os.environ.get("AOAI_ENDPOINT", "").rstrip("/")
 AOAI_API_KEY          = os.environ.get("AOAI_API_KEY", "")
-# >>> We zetten de default hier op gpt-4o <<<
 AOAI_CHAT_DEPLOYMENT  = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-4o")
 AOAI_EMBED_DEPLOYMENT = os.environ.get("AOAI_EMBED_DEPLOYMENT", "text-embedding-3-large")
 
-# Output-budgets (completion tokens) – genoeg voor jouw lange quickscan
-AOAI_MAX_OUT_QUICKSCAN = int(os.environ.get("AOAI_MAX_OUT_QUICKSCAN", "2400"))
+# Output-budgets — iets ruimer
+AOAI_MAX_OUT_QUICKSCAN = int(os.environ.get("AOAI_MAX_OUT_QUICKSCAN", "2800"))
 AOAI_MAX_OUT_DRAFT     = int(os.environ.get("AOAI_MAX_OUT_DRAFT", "2000"))
 AOAI_MAX_OUT_REVIEW    = int(os.environ.get("AOAI_MAX_OUT_REVIEW", "1600"))
 AOAI_MAX_OUT_INFO      = int(os.environ.get("AOAI_MAX_OUT_INFO", "800"))
 
-# Document/context caps (karakters) – iets krapper zodat het model nog kan schrijven
+# Context caps
 DOC_CAP_QUICK_REVIEW = int(os.environ.get("DOC_CAP_QUICK_REVIEW", "5500"))
 DOC_CAP_DRAFT        = int(os.environ.get("DOC_CAP_DRAFT", "8000"))
 CTX_PER_DOC_CHARS    = int(os.environ.get("CTX_PER_DOC_CHARS", "500"))
@@ -73,13 +70,14 @@ ALLOWED_METHODS = "GET,POST,OPTIONS"
 ALLOWED_HEADERS = "Content-Type,Authorization,x-functions-key"
 ALLOW_CREDENTIALS = "true"
 
-# =============================================================================
-
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 _search_client: SearchClient = None
 _aoai_client: AzureOpenAI    = None
 
+# =============================================================================
+# Helpers
+# =============================================================================
 
 def _cors_headers(req: func.HttpRequest) -> Dict[str, str]:
     origin = (req.headers.get("Origin") or "").rstrip("/")
@@ -93,7 +91,6 @@ def _cors_headers(req: func.HttpRequest) -> Dict[str, str]:
         }
     return {}
 
-
 def get_search_client() -> SearchClient:
     global _search_client
     if _search_client is None:
@@ -105,7 +102,6 @@ def get_search_client() -> SearchClient:
             credential=AzureKeyCredential(AZURE_SEARCH_API_KEY),
         )
     return _search_client
-
 
 def get_aoai_client() -> AzureOpenAI:
     global _aoai_client
@@ -119,23 +115,16 @@ def get_aoai_client() -> AzureOpenAI:
         )
     return _aoai_client
 
-# =============================================================================
-# Utilities
-# =============================================================================
-
 def _clip(txt: str, max_chars: int) -> str:
     if not txt:
         return ""
     return txt if len(txt) <= max_chars else txt[:max_chars]
 
-
 def _hex_prefix(b: bytes, n: int = 16) -> str:
     return binascii.hexlify(b[:n]).decode().upper()
 
-
 def _is_probably_docx(file_bytes: bytes) -> bool:
     return zipfile.is_zipfile(io.BytesIO(file_bytes))
-
 
 def _read_pdf_text(file_bytes: bytes) -> str:
     reader = PdfReader(io.BytesIO(file_bytes))
@@ -144,14 +133,12 @@ def _read_pdf_text(file_bytes: bytes) -> str:
         pages.append(p.extract_text() or "")
     return "\n".join(pages)
 
-
 def _read_docx_text(file_bytes: bytes) -> str:
     if not _is_probably_docx(file_bytes):
         sig = _hex_prefix(file_bytes, 8)
         raise zipfile.BadZipFile(f"Not a DOCX/ZIP (magic={sig})")
     d = docx.Document(io.BytesIO(file_bytes))
     return "\n".join([p.text for p in d.paragraphs])
-
 
 def embed_text(text: str) -> List[float]:
     client = get_aoai_client()
@@ -161,13 +148,11 @@ def embed_text(text: str) -> List[float]:
     )
     return resp.data[0].embedding
 
-
 def _dedupe_key(hit: Dict[str, Any]) -> str:
     pid = (hit.get("parent_id") or "").strip()
     src = (hit.get("source") or "").strip()
     head = (hit.get("content") or "")[:80].strip()
     return f"{pid}|{src}|{head}"
-
 
 def _get_field(r, name, default=""):
     try:
@@ -188,7 +173,6 @@ def _get_field(r, name, default=""):
         pass
     return default
 
-
 def _join_docs_for_context(docs, per_doc_chars=CTX_PER_DOC_CHARS,
                            max_docs=CTX_MAX_DOCS, max_context_chars=CTX_MAX_TOTAL_CHARS) -> str:
     blocks, total = [], 0
@@ -205,7 +189,6 @@ def _join_docs_for_context(docs, per_doc_chars=CTX_PER_DOC_CHARS,
         blocks.append(block)
         total += len(block)
     return "\n\n---\n\n".join(blocks)
-
 
 def format_history_for_prompt_flow(conversation: List[Dict[str, str]]) -> List[Dict[str, Dict[str, str]]]:
     chat_history = []
@@ -278,7 +261,6 @@ def _expand_queries(user_q: str, mode: str, doc_hint: str = "") -> List[str]:
             seen.add(q)
     return uniq
 
-
 def hybrid_search_multi(queries: List[str], top_k: int = TOP_K) -> List[Dict[str, Any]]:
     sc = get_search_client()
     all_hits: Dict[str, Dict[str, Any]] = {}
@@ -331,7 +313,6 @@ def detect_mode(explicit_mode: str, chat_input: str) -> str:
         return "REVIEW"
     return "DRAFT" if tenderish else "INFO"
 
-
 def render_system_and_user(mode: str, document_text: str, context_text: str,
                            chat_history_pf: List[Dict[str, Any]], chat_input: str):
     hist_lines = []
@@ -340,8 +321,21 @@ def render_system_and_user(mode: str, document_text: str, context_text: str,
         hist_lines.append("assistant:\n" + (item["outputs"].get("chat_output") or ""))
     history_block = "\n".join(hist_lines)
 
+    # vaste "overheid/CRM tender kit"
+    MUNICIPAL_CRM_KIT = """
+BELANGRIJK: Dit betreft een typische Nederlandse gemeentelijke CRM-aanbesteding. Neem de volgende vaste kaders altijd op als ze niet expliciet ontkracht worden:
+- Juridisch/inkoop: Aanbestedingswet 2012, Europees openbaar, gebruik van UEA, referentieverklaringen, conceptovereenkomst, (eventueel) wachtkamerovereenkomst.
+- Security: GIBIT 2023, "Gebruik van TLS en HTTP response headers" (vaak v1.7), Beleid Informatieveiligheid, Verwerkersovereenkomst (AVG), DPIA mogelijk.
+- Architectuur/standaarden: Common Ground, ZGW-/STUF(-ZKN) voor koppelingen, OData/CSV-API’s voor uitwisseling, koppelingen met webformulieren, Power BI-rapportages.
+- Toegankelijkheid: WCAG 2.1 / EN 301 549, voorleesfunctie, meertaligheid, B1-niveau.
+- Leveringsmodel: voorkeur voor generiek/standaard boven maatwerk, SaaS/on-prem/IaaS/PaaS varianten komen voor.
+- Beoordeling: vaak gunningscriterium prijs-kwaliteit, (mogelijk) PoC/demo, referentiemoment.
+Als deze onderdelen niet letterlijk in de context staan, noteer dan: “Niet gespecificeerd in stukken.” maar laat het kopje wél staan.
+""".strip()
+
     common_suffix = f"""
-context: {context_text}
+context (uit Azure Search):
+{context_text}
 
 chat history:
 {history_block}
@@ -352,58 +346,123 @@ user:
 
     if mode == "QUICKSCAN":
         system = (
-            "Je bent TenderMate, de AI-tenderanalist en strategisch bid-adviseur van IT-Workz.\n"
-            "STRICT_FACT_MODE: gebruik uitsluitend 'document_text' en 'context'. "
-            "Ontbreekt info → schrijf exact: “Niet gespecificeerd in stukken.” "
-            "Schrijf in helder Nederlands, met de koppen hieronder."
+            "Je bent TenderMate, AI-tenderanalist voor IT-Workz. "
+            "STRICT_FACT_MODE: gebruik document_text, context én de bekende gemeentelijke CRM-kaders. "
+            "Waar info ontbreekt: schrijf exact “Niet gespecificeerd in stukken.” "
+            "Schrijf in helder Nederlands, met duidelijke koppen, tabellen waar gevraagd."
         )
+
         user = f"""
 document_text: {document_text or ''}
 
-Maak een **quickscan (kwalificatie / go-no-go)** op basis van CONTEXT en aangeleverd document.
-Volg deze koppen exact:
+{MUNICIPAL_CRM_KIT}
+
+Maak een strategische **quickscan (kwalificatie / go-no-go)** op basis van CONTEXT, het document en de hierboven beschreven gemeentelijke kaders. 
+Volg **deze koppen exact in deze volgorde**:
 
 ## Samenvatting in één oogopslag
-- **Advies**: 🟢 / 🟡 / 🔴 — met 1 zin waarom.
-- **Belangrijkste 3 showstoppers/risico’s** (met mitigatie-hint).
-- **Belangrijkste 3 scoringskansen**.
+- **Advies**: 🟢 Voorwaardelijke Go / 🟡 Twijfel / 🔴 No-Go — met 1 zin waarom.
+- **Belangrijkste 3 showstoppers/risico’s** (noem GIBIT/security, referenties, prijsplafond indien niet gespecificeerd).
+- **Belangrijkste 3 scoringskansen** (noem Common Ground, toegankelijkheid, PoC/demo).
 
 ## Feitenblad (tabel)
 | Veld | Waarde |
 |---|---|
 | **Naam aanbesteding / opdrachtgever** | ... |
-| **Soort aanbesteding/procedure** | ... |
-| **Sector/organisatie-type** | ... |
-| **Aantal locaties/scholen** | ... |
-| **Aantal medewerkers** | ... |
-| **Aantal leerlingen/studenten** | ... |
-| **# vragenronden** | ... |
-| **Vragen stellen – kanaal/portaal** | ... |
-| **Inkoopadviseur / contact** | ... |
-| **Contractduur (basis + opties)** | ... |
-| **Contractwaarde / richtprijs / prijsplafond** | ... |
+| **Soort aanbesteding/procedure** | Europees openbaar (Aw2012) **of** “Niet gespecificeerd in stukken.” |
+| **Sector/organisatie-type** | Gemeente / decentrale overheid |
+| **Aantal locaties/scholen** | Niet gespecificeerd in stukken |
+| **Aantal medewerkers** | Niet gespecificeerd in stukken **(gemeente ≈ 1.500–2.000 → alleen noemen als in context!)** |
+| **# vragenronden** | Niet gespecificeerd in stukken |
+| **Vragen stellen – kanaal/portaal** | Niet gespecificeerd in stukken |
+| **Inkoopadviseur / contact** | Niet gespecificeerd in stukken |
+| **Contractduur (basis + opties)** | Niet gespecificeerd in stukken |
+| **Contractwaarde / richtprijs / prijsplafond** | Niet gespecificeerd in stukken |
 
 ## Aanleiding en doel
+- Beschrijf waarom de gemeente een CRM-oplossing wil.
+- Neem sleutelzinnen over organisatie/omvang op ALS die in context/document staan.
+- Als de aanleiding ontbreekt: schrijf “Niet gespecificeerd in stukken.”
+
 ## Essentie van de uitvraag (scope)
+- Levering + implementatie + beheer/onderhoud CRM.
+- Koppelingen (ZGW/STUF(-ZKN), OData/CSV, Power BI, webformulieren).
+- Toekomstige uitbreidbaarheid binnen concern-informatie-architectuur.
+- Zet erbij als iets niet in stukken staat.
+
 ## KO-criteria en voorwaarden (checklist)
+- UEA / uitsluitingsgronden / geschiktheidseisen → ✅/❌/Niet gespecificeerd.
+- Referenties (gemeente, vergelijkbare omvang) → benoem risico als onbekend.
+- Juridische kaders: GIBIT 2023, Verwerkersovereenkomst (AVG), TLS/HTTP headers v1.7, Beleid Informatieveiligheid.
+- Conclusie haalbaarheid (harde eisen): 1 alinea.
+
 ## Architectuur & Standaarden
+- Common Ground (nu/toekomst)
+- ZGW-/STUF(-ZKN) voor formulierenstromen
+- OData/CSV-API’s
+- Microsoft-integraties (Teams/SharePoint/Power BI) als in context.
+- Toegankelijkheid (WCAG/EN 301 549, B1, voorleesfunctie)
+Zet overal “Niet gespecificeerd in stukken” als het niet is gevonden.
+
 ## Programma van Eisen/Wensen (samengevat per cluster)
+- Projectorganisatie & implementatie (realistische doorlooptijd, fasering)
+- Techniek/architectuur & integraties
+- Privacy/AVG & security (GIBIT, TLS, VO, DPIA)
+- Beheer/Support/SLA
+- Adoptie/Training
+- Planning/Migratie
+Noem opvallende punten en hiaten.
+
 ## Analyse van Vereiste Disciplines
+- Noem rollen (projectleider, solution/CRM architect, integratiespecialist, security/privacy, adoptie/change, BI/rapportage).
+- Koppel kort aan CONTEXT.
+
 ## Weging, paginabudget en planning
+- Weging: “Niet gespecificeerd in stukken” OF benoem wat er wel staat.
+- Paginabudget: idem.
+- Planning & deadlines: publicatie, vragenronde, PoC/demo, gunning, start.
+
 ## Budget en concurrentiepositie
+- Noem alle prijs-/plafond-/ramingssignalen uit context.
+- Als er niets staat: “Niet gespecificeerd in stukken.”
+- Benoem verwachte concurrenten (type leveranciers) o.b.v. CONTEXT.
+
 ## Showstoppers / risico’s (met mitigatie of verhelderingsvraag)
+- **GIBIT / security / TLS / VO**
+- **Referenties op gemeentelijk CRM-niveau**
+- **Common Ground / ZGW/STUF / OData**
+- **Toegankelijkheid (EN 301 549, WCAG 2.1, B1, voorleesfunctie)**
+Formuleer per punt 1 verhelderingsvraag.
+
 ## Concurrentie-analyse
+- Benoem type partijen (grote gemeentelijke CRM-leveranciers, Microsoft-dienstverleners, low-code CRM’s met overheidspakket).
+- Zet erachter: “Exacte huidige leverancier: Niet gespecificeerd in stukken.”
+
 ## Referenties (advies)
+- Gemeentelijke CRM-implementatie (≈ vergelijkbare omvang).
+- CRM met Common Ground + ZGW/STUF + OData/CSV.
+- CRM met aantoonbare toegankelijkheid (EN 301 549/WCAG 2.1).
+
 ## In te dienen bewijsstukken & status
+- UEA, KvK, ISO/ISAE/NEN/ENSIA, verzekeringen, DPA/VO, GIBIT 2023, verwerkersovereenkomst, prijzenblad, referentieverklaring, verklaring geen Russische betrokkenheid.
+- Zet per stuk: 🟢 aanwezig / 🔴 ontbreekt / “Niet gespecificeerd in stukken”.
+
 ## Standaard- en verdiepingsvragen
+- Vragen over KO, gunningsweging, PoC/demo, integraties, toegankelijkheid, migratie, security-afwijkingen.
+
 ## Actiechecklist (intern)
+- 6–10 concrete acties met eigenaar en datum.
+
 ## Go/No-Go indicatie (conclusie)
-""".strip() + "\n\n" + common_suffix
+- 🟢 / 🟡 / 🔴 + 4–6 onderbouwende bullets.
+
+{common_suffix}
+""".strip()
 
     elif mode == "REVIEW":
         system = (
             "Je bent TenderMate, AI-kwaliteitsauditor voor aanbestedingen. "
-            "Beoordeel t.o.v. gunningskader en CONTEXT. Ontbrekend = “Niet gespecificeerd in stukken.”"
+            "Beoordeel op volledigheid en scoringspotentieel. Ontbrekend = “Niet gespecificeerd in stukken.”"
         )
         user = f"""
 document_text: {document_text or ''}
@@ -422,7 +481,9 @@ Volg deze koppen exact:
 ## Referenties & bewijs
 ## Actiechecklist (intern)
 ## Eindoordeel (kort)
-""".strip() + "\n\n" + common_suffix
+
+{common_suffix}
+""".strip()
 
     elif mode == "INFO":
         system = "Je bent TenderMate, een AI-assistent voor aanbestedingen. Antwoord kort en praktisch."
@@ -432,7 +493,9 @@ Geef in bullets:
 - Hoe je CONTEXT gebruikt
 - Hoe ik een document aanlever
 - Hoe ik betere antwoorden krijg
-""".strip() + "\n\n" + common_suffix
+
+{common_suffix}
+""".strip()
 
     else:  # DRAFT
         system = (
@@ -452,7 +515,9 @@ Genereer een scoregerichte concepttekst met:
 ## Paginabudget & opmaak
 ## Referenties & bewijs
 ## Verhelderingsvragen
-""".strip() + "\n\n" + common_suffix
+
+{common_suffix}
+""".strip()
 
     return system, user
 
@@ -462,9 +527,7 @@ Genereer een scoregerichte concepttekst met:
 
 def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
     client = get_aoai_client()
-    model_name = AOAI_CHAT_DEPLOYMENT.lower()
 
-    # outputbudget
     mh = (mode_hint or "").upper()
     if mh == "QUICKSCAN":
         max_out = AOAI_MAX_OUT_QUICKSCAN
@@ -480,13 +543,12 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         {"role": "user",   "content": user_text},
     ]
 
-    # 1) probeer stream + response_format
+    # 1) stream
     try:
         stream = client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
             messages=messages,
             stream=True,
-            # gpt-4o: max_tokens ok
             max_tokens=max_out,
             temperature=0.7,
             response_format={"type": "text"},
@@ -510,9 +572,9 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         if txt:
             return txt
     except Exception as e:
-        logging.warning(f"stream with response_format failed, fallback to non-stream. Error: {e}")
+        logging.warning(f"stream failed, fallback to non-stream: {e}")
 
-    # 2) non-stream, met response_format
+    # 2) non-stream
     try:
         resp = client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
@@ -536,9 +598,9 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
         if final_txt:
             return final_txt
     except Exception as e:
-        logging.warning(f"non-stream with response_format failed, try plain. Error: {e}")
+        logging.warning(f"non-stream failed, plain fallback: {e}")
 
-    # 3) allerlaatste fallback: plain call
+    # 3) plain
     try:
         resp = client.chat.completions.create(
             model=AOAI_CHAT_DEPLOYMENT,
@@ -567,15 +629,13 @@ def call_chat(system_text: str, user_text: str, mode_hint: str = "") -> str:
 @app.route(route="TalkToTenderBot")
 def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
     try:
-        # CORS preflight
         if req.method == "OPTIONS":
             return func.HttpResponse(status_code=204, headers=_cors_headers(req))
 
         if req.method == "GET":
-            return func.HttpResponse("OK - TenderMate TalkToTenderBot - gpt-4o", status_code=200,
+            return func.HttpResponse("OK - TenderMate TalkToTenderBot - gpt-4o (CRM-kit)", status_code=200,
                                      mimetype="text/plain", headers=_cors_headers(req))
 
-        # intake logging
         try:
             ct = (req.headers.get("Content-Type") or "").lower()
             raw_len = len(req.get_body() or b"")
@@ -589,7 +649,6 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
         mode = ""
         content_type = (req.headers.get("Content-Type") or "").lower()
 
-        # multipart
         if "multipart/form-data" in content_type:
             body_bytes = req.get_body() or b""
             try:
@@ -646,7 +705,6 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                     return func.HttpResponse(f"Fout bij lezen van document: {repr(e)}",
                                              status_code=422, mimetype="text/plain", headers=_cors_headers(req))
 
-        # json
         elif "application/json" in content_type:
             try:
                 body = req.get_json()
@@ -666,7 +724,6 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                 status_code=415, mimetype="text/plain", headers=_cors_headers(req)
             )
 
-        # mode bepalen
         mode_final = detect_mode(mode, question)
 
         # retrieval
@@ -687,7 +744,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
                 max_context_chars=CTX_MAX_TOTAL_CHARS,
             )
 
-        # doc trimmen
+        # doc trim
         if mode_final in ("QUICKSCAN", "REVIEW"):
             document_text = _clip(document_text, DOC_CAP_QUICK_REVIEW)
         elif mode_final == "DRAFT":
@@ -695,12 +752,12 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
         else:
             document_text = _clip(document_text, 6000)
 
-        # conversation kort
+        # convo kort
         if isinstance(conversation, list) and len(conversation) > 8:
             conversation = conversation[-8:]
         chat_history_pf = format_history_for_prompt_flow(conversation)
 
-        # prompt renderen
+        # prompt
         system_text, user_text = render_system_and_user(
             mode=mode_final,
             document_text=document_text,
@@ -709,7 +766,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             chat_input=question or "Analyseer het bijgevoegde document."
         )
 
-        # call model
+        # call
         try:
             chat_output = call_chat(system_text, user_text, mode_hint=mode_final)
         except Exception as e:
