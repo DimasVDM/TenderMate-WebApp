@@ -45,7 +45,7 @@ TOP_K             = int(os.environ.get("TOP_K", "12"))
 # Azure AI Foundry
 AOAI_ENDPOINT         = os.environ.get("AOAI_ENDPOINT", "").rstrip("/")
 AOAI_API_KEY          = os.environ.get("AOAI_API_KEY", "")
-AOAI_CHAT_DEPLOYMENT  = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-4o")
+AOAI_CHAT_DEPLOYMENT  = os.environ.get("AOAI_CHAT_DEPLOYMENT", "gpt-5")
 AOAI_EMBED_DEPLOYMENT = os.environ.get("AOAI_EMBED_DEPLOYMENT", "text-embedding-3-large")
 
 # Output-budgets — iets ruimer
@@ -633,7 +633,7 @@ def TalkToTenderBot(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(status_code=204, headers=_cors_headers(req))
 
         if req.method == "GET":
-            return func.HttpResponse("OK - TenderMate TalkToTenderBot - gpt-4o (CRM-kit)", status_code=200,
+            return func.HttpResponse("OK - TenderMate TalkToTenderBot - gpt-5", status_code=200,
                                      mimetype="text/plain", headers=_cors_headers(req))
 
         try:
