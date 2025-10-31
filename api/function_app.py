@@ -36,11 +36,11 @@ from openai import AzureOpenAI
 
 AZURE_SEARCH_ENDPOINT = os.environ.get("AZURE_SEARCH_ENDPOINT", "").rstrip("/")
 AZURE_SEARCH_API_KEY  = os.environ.get("AZURE_SEARCH_API_KEY", "")
-AZURE_SEARCH_INDEX    = os.environ.get("AZURE_SEARCH_INDEX", "sharepoint-vectorizer-direct-v2")
+AZURE_SEARCH_INDEX    = os.environ.get("AZURE_SEARCH_INDEX", "sharepoint-vectorizer-direct")
 
 TEXT_VECTOR_FIELD = "text_vector"
 SEMANTIC_CONFIG   = os.environ.get("SEMANTIC_CONFIG", "sharepoint-vectorizer-semantic-configuration")
-TOP_K             = int(os.environ.get("TOP_K", "5"))
+TOP_K             = int(os.environ.get("TOP_K", "12"))
 
 # Azure AI Foundry
 AOAI_ENDPOINT         = os.environ.get("AOAI_ENDPOINT", "").rstrip("/")
